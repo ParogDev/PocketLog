@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- A UI error goes to the latest cast sent within 1.5 s: the opener, the spell cast between the Pick Pocket and the opener (`nextCast.errors`), or the Pick Pocket itself. Before, an error after that in-between spell was filed on the Pick Pocket.
+
 ## 0.3.1
 
 - An opener that arrives after its window closed is judged against every window of its own attempt closed in the last 10 s, not only the latest closed window, so another mob's window closing in between no longer leaves `closedBy` at `manual`.

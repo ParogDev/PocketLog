@@ -531,12 +531,21 @@ function R.onUIError(errType, msg)
 	if not a or not a.sentAt then
 		return
 	end
-	-- The opener's errors belong to the opener; the Pick Pocket's to the attempt.
-	local target = a
-	if a.opener and a.opener.sentAt and t - a.opener.sentAt < ERROR_WINDOW then
-		target = a.opener
+	-- An error belongs to the latest cast sent within ERROR_WINDOW: the opener's to the opener, the in-between
+	-- spell's (Sprint, a bandage) to `nextCast`, the Pick Pocket's to the attempt.
+	local target
+	for _, c in ipairs({ a.opener or false, a.nextCast or false }) do
+		if c and c.sentAt and t >= c.sentAt and t - c.sentAt < ERROR_WINDOW then
+			if not target or c.sentAt > target.sentAt then
+				target = c
+			end
+		end
+	end
+	if target then
 		target.errors = target.errors or {}
-	elseif t - a.sentAt >= ERROR_WINDOW then
+	elseif t - a.sentAt < ERROR_WINDOW then
+		target = a
+	else
 		return
 	end
 	local e = {
