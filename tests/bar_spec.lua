@@ -288,6 +288,24 @@ describe("Bar on the recorder's events", function()
 		assert.truthy(mock.chat[#mock.chat]:find("PocketLog bar: off", 1, true))
 	end)
 
+	it("without Bar.lua (no client restart yet) records as before and names the missing file", function()
+		mock.install()
+		local bare = {}
+		for _, f in ipairs({ "Logic.lua", "Recorder.lua", "Core.lua" }) do
+			assert(loadfile("./" .. f))("PocketLog", bare)
+		end
+		mock.fire("ADDON_LOADED", "PocketLog")
+		mock.fire("PLAYER_LOGIN")
+		mock.target = { guid = MOB, name = "Stromgarde Soldier", level = 38, dead = false }
+		cast("Cast-1")
+		assert.equal(1, #bare.db.attempts)
+		local st = bare.selftest.snapshot("test")
+		assert.truthy(st.bar.error:find("restart", 1, true))
+		assert.is_nil(st.lastError)
+		_G.SlashCmdList.POCKETLOG("bar on")
+		assert.truthy(mock.chat[#mock.chat]:find("Bar.lua not loaded", 1, true))
+	end)
+
 	it("keeps the saved position, state and drain across a reload", function()
 		local saved = { bar = { enabled = false, locked = false, drain = 2, point = { "TOP", "TOP", 10, -50 } } }
 		mock.install()

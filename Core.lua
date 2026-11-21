@@ -6,6 +6,23 @@ PocketLog = ns
 
 local R, Logic, Bar = ns.Recorder, ns.Logic, ns.Bar
 
+-- Bar.lua came with 0.4.0. A client that has not restarted since keeps the old file list and never loads it:
+-- recording goes on, and the selftest and /pocketlog bar name that broken link instead of erroring.
+if not Bar then
+	local missing = "Bar.lua not loaded: restart the client (a new file needs a restart, not a /reload)"
+	Bar = {
+		EXTRA_EVENTS = {},
+		init = function() end,
+		onEvent = function() end,
+		selftest = function()
+			return { error = missing }
+		end,
+		slash = function()
+			return { "PocketLog bar: " .. missing }
+		end,
+	}
+end
+
 local DB_VERSION = 1
 
 function ns.initDB(saved)
