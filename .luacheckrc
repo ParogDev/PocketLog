@@ -29,7 +29,7 @@ else
 end
 -- FrameXML globals and GlobalStrings the generated list doesn't carry (it is built from the C API lists).
 for _, g in ipairs({
-	"DEFAULT_CHAT_FRAME",
+	"DEFAULT_CHAT_FRAME", "UIParent", "GameFontHighlight",
 	"SPELL_FAILED_TARGET_NO_POCKETS", "ERR_ALREADY_PICKPOCKETED", "SPELL_FAILED_TARGET_AFFECTING_COMBAT",
 	"SPELL_FAILED_OUT_OF_RANGE", "ERR_OUT_OF_RANGE", "SPELL_FAILED_ONLY_STEALTHED", "SPELL_FAILED_NOT_BEHIND",
 	"SPELL_FAILED_UNIT_NOT_INFRONT",

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- The pocket bar (`Bar.lua`): a 1400 ms timeline from the Pick Pocket cast with the 250 ms dead zone, a fill that grows from the cast, a gate line that snaps to the predicted end of auto loot when the window opens, one pip per loot slot, and world latency. At the close with everything taken (or no window by 600 ms plus world latency) it turns yellow, `Open now`, and drains over 3 s. The next press shows `Opened` or `Too early` with the ms. Amber with a warning when you moved at the cast. A target change clears it. Display only; nothing in instances.
+- `/pocketlog bar on | off | lock | unlock | reset | drain <seconds>`; the settings and position are saved in `PocketLogDB.bar`.
+- The selftest has `bar` counters: started, released by loot closed (`lootClosed`, split into `ready` and `left`), by the timeout (`timeout`), presses `opened` and `early`, and windows open too long (`stale`).
+- New file in the `.toc`: the first load needs a client restart.
+
 ## 0.3.3
 
 - A loot window that never got `LOOT_CLOSED` (open at a reload, a logout, a disconnect or a crash) is settled at the next load and at logout: `closedBy = "unknown"`, `left` from the slots not taken while it was open, no `closedAt`. Such a window used to stay `pending` in the summary and the report forever. `Recorder.stats.closeUnknown` counts them; `/pocketlog` prints `unknown` in the closed-by line.
