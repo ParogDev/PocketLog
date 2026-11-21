@@ -24,7 +24,7 @@ ns.selftest = selftest
 
 -- The version the code says it is: a junction-linked checkout has the packager's unreplaced token in the .toc,
 -- so the selftest would show the same "@project-version@" before and after a change.
-ns.VERSION = "0.3.1"
+ns.VERSION = "0.3.2"
 
 local function version()
 	local ok, v = pcall(C_AddOns.GetAddOnMetadata, ADDON, "Version")
