@@ -102,10 +102,11 @@ function ns.summaryLines()
 		s.move.moving.notShown
 	)
 	add(
-		"  pocket window closed by: opener %d, all taken %d, manual %d",
+		"  pocket window closed by: opener %d, all taken %d, manual %d, empty %d",
 		s.closedBy.opener,
 		s.closedBy.all_taken,
-		s.closedBy.manual
+		s.closedBy.manual,
+		s.closedBy.empty
 	)
 	add(
 		"  shown / not shown by range: in %d/%d, out %d/%d, unknown %d/%d",

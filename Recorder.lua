@@ -14,7 +14,7 @@
 -- Session shape: { readyAt, dtMs (from the cast), autoloot, opened, targetDead, slots = { slot... },
 --     autoLootDefault, autoLootRate (raw CVar strings), autoLootToggle (IsModifiedClick("AUTOLOOTTOGGLE")),
 --     cleared = { [slot] = ms after readyAt }, changed = { { slot, dtMs } } (LOOT_SLOT_CHANGED),
---     closedAt, openMs, left = { slot numbers }, closedBy = "opener"|"all_taken"|"manual" (a guess),
+--     closedAt, openMs, left = { slot numbers }, closedBy = "opener"|"all_taken"|"manual"|"empty" (a guess),
 --     closeVsOpenerMs = closedAt - opener.sentAt, closeVsOpenerResultMs = closedAt - opener.resultAt,
 --     money = copper gained (PLAYER_MONEY), chat = { { kind, text, dtMs } } }
 -- Every value read from the client goes through safe(): a secret is stored as "secret".
@@ -135,6 +135,10 @@ local function rangeAt(spellID)
 			r.spell = "error"
 		end
 	end
+	if CheckInteractDistance == nil then
+		r.interact = "missing"
+		return r
+	end
 	local ok, near = pcall(CheckInteractDistance, "target", 3)
 	if ok then
 		r.interact = safe(near)
@@ -155,12 +159,19 @@ end
 -- Where the player stands: { mapID, x, y, subzone }. No position (an instance, a map without one) is fine.
 local function location()
 	local loc = {}
-	local okM, mapID = pcall(C_Map.GetBestMapForUnit, "player")
+	if not (C_Map and C_Map.GetBestMapForUnit and C_Map.GetPlayerMapPosition) then
+		loc.missing = "C_Map"
+	end
+	local okM, mapID = pcall(function()
+		return C_Map.GetBestMapForUnit("player")
+	end)
 	if okM then
 		loc.mapID = safe(mapID)
 	end
 	if type(loc.mapID) == "number" then
-		local okP, pos = pcall(C_Map.GetPlayerMapPosition, loc.mapID, "player")
+		local okP, pos = pcall(function()
+			return C_Map.GetPlayerMapPosition(loc.mapID, "player")
+		end)
 		if okP and pos ~= nil and not isSecret(pos) then
 			local okXY, x, y = pcall(pos.GetXY, pos)
 			if okXY then
@@ -285,7 +296,9 @@ local function judgeClose(rec, a)
 			math.abs(rec.closedAt - sent) <= CLOSE_BY_OPENER
 			or (type(rec.readyAt) == "number" and sent >= rec.readyAt and sent <= rec.closedAt)
 		)
-	if #(rec.left or {}) == 0 then
+	if #(rec.slots or {}) == 0 then
+		rec.closedBy = "empty" -- nothing was there to take: says nothing about what closed it
+	elseif #(rec.left or {}) == 0 then
 		rec.closedBy = "all_taken"
 	elseif byOpener then
 		rec.closedBy = "opener"

@@ -207,7 +207,7 @@ function Logic.range(a)
 	return "unknown"
 end
 
-Logic.CLOSED_BY = { "opener", "all_taken", "manual" }
+Logic.CLOSED_BY = { "opener", "all_taken", "manual", "empty" }
 
 Logic.GAP_EDGES = { 250, 500, 1000, 2000 }
 Logic.LAT_EDGES = { 50, 100, 200, 400 }
@@ -229,7 +229,7 @@ function Logic.summarize(attempts, now)
 			unknown = { shown = 0, notShown = 0 },
 		},
 		-- what closed the pocket window (Recorder's guess), over pocket windows that recorded it
-		closedBy = { opener = 0, all_taken = 0, manual = 0 },
+		closedBy = { opener = 0, all_taken = 0, manual = 0, empty = 0 },
 		-- window shown or not, split by C_Spell.IsSpellInRange at the Pick Pocket cast
 		range = {
 			inRange = { shown = 0, notShown = 0 },

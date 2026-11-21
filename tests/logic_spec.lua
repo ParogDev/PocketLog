@@ -171,7 +171,7 @@ describe("Logic", function()
 			{ result = "succeeded", resultAt = 1, corpse = {} }, -- an old attempt without range
 		}
 		local s = L.summarize(attempts, 100)
-		assert.same({ opener = 1, all_taken = 1, manual = 0 }, s.closedBy) -- corpse windows don't count
+		assert.same({ opener = 1, all_taken = 1, manual = 0, empty = 0 }, s.closedBy) -- corpse windows don't count
 		assert.same({ shown = 1, notShown = 0 }, s.range.inRange)
 		assert.same({ shown = 1, notShown = 1 }, s.range.outOfRange)
 		assert.same({ shown = 0, notShown = 1 }, s.range.unknown)

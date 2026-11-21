@@ -391,15 +391,30 @@ describe("Recorder", function()
 			assert.equal("manual", p.closedBy)
 			assert.equal(-1000, p.closeVsOpenerMs)
 			local s = ns.Logic.summarize(db.attempts, mock.clock)
-			assert.same({ opener = 0, all_taken = 0, manual = 1 }, s.closedBy)
+			assert.same({ opener = 0, all_taken = 0, manual = 1, empty = 0 }, s.closedBy)
 			assert.same({ shown = 1, notShown = 0 }, s.range.inRange)
+		end)
+
+		it("calls a window with no slots empty, not all_taken", function()
+			castAndSucceed("Cast-1")
+			openLoot({}, {})
+			assert.equal("empty", db.attempts[1].pocket.closedBy)
+		end)
+
+		it("records missing CheckInteractDistance and C_Map without losing the attempt", function()
+			_G.CheckInteractDistance = nil
+			_G.C_Map = nil
+			castAndSucceed("Cast-1")
+			local a = db.attempts[1]
+			assert.equal("missing", a.range.interact)
+			assert.equal("C_Map", a.loc.missing)
 		end)
 
 		it("prints the closed-by and range lines in /pocketlog", function()
 			castAndSucceed("Cast-1")
 			openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
 			SlashCmdList.POCKETLOG("")
-			assert.matches("closed by: opener 0, all taken 1, manual 0", mock.chat[#mock.chat - 1], 1, true)
+			assert.matches("closed by: opener 0, all taken 1, manual 0, empty 0", mock.chat[#mock.chat - 1], 1, true)
 			assert.matches("by range: in 1/0, out 0/0, unknown 0/0", mock.chat[#mock.chat], 1, true)
 		end)
 	end)
