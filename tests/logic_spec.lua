@@ -142,4 +142,38 @@ describe("Logic", function()
 		assert.same({ left = 1, carried = 1, neverShown = 1, neverShownSecond = 1 }, s.carry)
 		assert.equal(1, s.openerBeforeWindow)
 	end)
+
+	it("treats slot timings in cleared (0 included) as cleared, like the old true", function()
+		local p = { slots = { money(1, 5), item(2, 7), item(3, 9) }, cleared = { [1] = 0, [2] = 420 }, closedAt = 1 }
+		assert.same({ item(3, 9) }, L.slotsLeft(p))
+	end)
+
+	it("counts closedBy over pocket windows and shown / not shown by spell range", function()
+		local attempts = {
+			{
+				result = "succeeded",
+				range = { spell = true, interact = "blocked" },
+				pocket = { slots = { money(1, 5) }, cleared = { [1] = 80 }, closedAt = 2, closedBy = "all_taken" },
+				corpse = {},
+			},
+			{
+				result = "succeeded",
+				range = { spell = false },
+				pocket = {
+					slots = { money(1, 5), item(2, 7) },
+					cleared = { [1] = 80 },
+					closedAt = 2,
+					closedBy = "opener",
+				},
+				corpse = { { slots = { money(1, 3) }, closedBy = "manual" } },
+			},
+			{ result = "succeeded", resultAt = 1, range = { spell = false }, corpse = {} },
+			{ result = "succeeded", resultAt = 1, corpse = {} }, -- an old attempt without range
+		}
+		local s = L.summarize(attempts, 100)
+		assert.same({ opener = 1, all_taken = 1, manual = 0, empty = 0 }, s.closedBy) -- corpse windows don't count
+		assert.same({ shown = 1, notShown = 0 }, s.range.inRange)
+		assert.same({ shown = 1, notShown = 1 }, s.range.outOfRange)
+		assert.same({ shown = 0, notShown = 1 }, s.range.unknown)
+	end)
 end)

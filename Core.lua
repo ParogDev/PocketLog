@@ -39,6 +39,7 @@ function selftest.snapshot(phase)
 		loadedAt = selftest.loadedAt,
 		savedAt = date("%Y-%m-%d %H:%M:%S"),
 		spells = R.resolved,
+		cvars = { spellQueueWindow = R.cvars.spellQueueWindow },
 		counters = R.stats,
 		attempts = #ns.db.attempts,
 		summary = sum,
@@ -93,6 +94,29 @@ function ns.summaryLines()
 		s.carry.neverShownSecond
 	)
 	add("  opener cast before the pocket window: %d", s.openerBeforeWindow)
+	add(
+		"  window shown / not shown: still %d/%d, moving %d/%d",
+		s.move.still.shown,
+		s.move.still.notShown,
+		s.move.moving.shown,
+		s.move.moving.notShown
+	)
+	add(
+		"  pocket window closed by: opener %d, all taken %d, manual %d, empty %d",
+		s.closedBy.opener,
+		s.closedBy.all_taken,
+		s.closedBy.manual,
+		s.closedBy.empty
+	)
+	add(
+		"  shown / not shown by range: in %d/%d, out %d/%d, unknown %d/%d",
+		s.range.inRange.shown,
+		s.range.inRange.notShown,
+		s.range.outOfRange.shown,
+		s.range.outOfRange.notShown,
+		s.range.unknown.shown,
+		s.range.unknown.notShown
+	)
 	return out
 end
 
@@ -131,8 +155,10 @@ local handlers = {
 	LOOT_READY = R.onLootReady,
 	LOOT_OPENED = R.onLootOpened,
 	LOOT_SLOT_CLEARED = R.onLootSlotCleared,
+	LOOT_SLOT_CHANGED = R.onLootSlotChanged,
 	LOOT_CLOSED = R.onLootClosed,
 	PLAYER_MONEY = R.onMoney,
+	CVAR_UPDATE = R.onCVarUpdate,
 	CHAT_MSG_MONEY = function(text)
 		R.onChat("money", text)
 	end,
@@ -159,6 +185,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 	elseif event == "PLAYER_LOGIN" then
 		selftest.loadedAt = date("%Y-%m-%d %H:%M:%S")
 		guard("resolveSpells", R.resolveSpells)
+		guard("cvars", R.refreshCVars)
 		guard("snapshot", selftest.snapshot, "login")
 	elseif event == "PLAYER_LOGOUT" then
 		guard("snapshot", selftest.snapshot, "logout")

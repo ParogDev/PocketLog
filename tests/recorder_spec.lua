@@ -174,6 +174,75 @@ describe("Recorder", function()
 		assert.equal(1, #ns.db.attempts[1].corpse)
 	end)
 
+	it("records movement at the Pick Pocket send, its success and the opener", function()
+		mock.speed = 7
+		pickpocket("Cast-1")
+		mock.speed = 0
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-2", 6770)
+		local a = db.attempts[1]
+		assert.same({ moving = true, speed = 7, falling = false }, a.move)
+		assert.same({ moving = false, speed = 0, falling = false }, a.moveAtResult)
+		assert.equal(0, a.opener.move.speed)
+		assert.equal("moving", ns.Logic.movement(a))
+		local s = ns.Logic.summarize(db.attempts, mock.clock + 5)
+		assert.same({ shown = 0, notShown = 1 }, s.move.moving)
+	end)
+
+	it("stores a secret speed as 'secret'", function()
+		mock.speed = 3
+		mock.secret[3] = true
+		pickpocket("Cast-1")
+		assert.equal("secret", db.attempts[1].move.speed)
+		assert.equal("moving", ns.Logic.movement(db.attempts[1])) -- IsPlayerMoving still answered
+	end)
+
+	it("keeps looking for the real opener past an unrelated spell", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-2", 1752)
+		mock.advance(0.4)
+		mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-3", 1833)
+		local a = db.attempts[1]
+		assert.equal("Sinister Strike", a.nextCast.name)
+		assert.equal("Cheap Shot", a.opener.name)
+	end)
+
+	it("does not take an empty window long after the cast as the pocket", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.advance(600)
+		openLoot({}, {})
+		local a = db.attempts[1]
+		assert.is_nil(a.pocket)
+		assert.equal(0, #a.corpse)
+		assert.equal(1, ns.Recorder.stats.orphanLoot)
+	end)
+
+	it("treats attempts saved before a reboot (clock restarted) as old", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.frames = {}
+		mock.clock = 5 -- GetTimePreciseSec after a reboot
+		ns = mock.loadAddon(".", db)
+		local a = ns.db.attempts[1]
+		assert.equal("never_shown", ns.Logic.classifyAttempt(a, mock.clock))
+		openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
+		assert.is_nil(a.pocket)
+		assert.equal(1, #a.corpse)
+	end)
+
+	it("closes a window whose LOOT_CLOSED was missed when the next one opens", function()
+		mock.loot = { mock.moneySlot("Creature-0-1-0-1-99-0", 5) }
+		mock.fire("LOOT_READY", false)
+		mock.advance(120)
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
+		assert.is_not_nil(db.attempts[1].pocket)
+		assert.equal(1, ns.Recorder.stats.closeMissed)
+	end)
+
 	it("prints a summary and writes a selftest snapshot on logout", function()
 		pickpocket("Cast-1")
 		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
@@ -186,5 +255,167 @@ describe("Recorder", function()
 		assert.equal("test", db.selftest.version)
 		assert.equal("logout", db.selftest.phase)
 		assert.equal(1, db.selftest.summary.outcome.looted)
+	end)
+
+	describe("0.3.0 fields", function()
+		local function castAndSucceed(castGUID)
+			pickpocket(castGUID)
+			mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", castGUID, 921)
+			mock.advance(0.2)
+		end
+
+		it("stamps the spell queue window, range and location on the attempt", function()
+			castAndSucceed("Cast-1")
+			local a = db.attempts[1]
+			assert.equal("400", a.sqw)
+			assert.same({ spell = true, interact = true }, a.range)
+			assert.same({ mapID = 1417, x = 0.457, y = 0.612, subzone = "Stromgarde Keep" }, a.loc)
+			mock.fire("PLAYER_LOGOUT")
+			assert.equal("400", db.selftest.cvars.spellQueueWindow)
+		end)
+
+		it("refreshes the spell queue window on CVAR_UPDATE only for that CVar", function()
+			mock.cvars.SpellQueueWindow = "150"
+			mock.fire("CVAR_UPDATE", "autoLootDefault", "1")
+			pickpocket("Cast-1")
+			assert.equal("400", db.attempts[1].sqw)
+			mock.fire("CVAR_UPDATE", "SpellQueueWindow", "150")
+			pickpocket("Cast-2")
+			assert.equal("150", db.attempts[2].sqw)
+		end)
+
+		it("stores a nil position as no x/y and an out-of-range cast as false", function()
+			mock.pos = nil
+			mock.inSpellRange = false
+			mock.interact = false
+			pickpocket("Cast-1")
+			local a = db.attempts[1]
+			assert.is_nil(a.loc.x)
+			assert.is_nil(a.loc.y)
+			assert.equal(1417, a.loc.mapID)
+			assert.same({ spell = false, interact = false }, a.range)
+			assert.equal("outOfRange", ns.Logic.range(a))
+		end)
+
+		it("records 'blocked' when CheckInteractDistance is protected", function()
+			mock.interactBlocked = true
+			pickpocket("Cast-1")
+			assert.equal("blocked", db.attempts[1].range.interact)
+			assert.is_true(db.attempts[1].range.spell)
+			assert.is_nil(ns.selftest.lastError)
+		end)
+
+		it("stores secret subzone, range and CVar values as 'secret'", function()
+			mock.subzone = "Hidden Place"
+			mock.secret["Hidden Place"] = true
+			mock.cvars.autoLootRate = "secret-rate"
+			mock.secret["secret-rate"] = true
+			mock.inSpellRange = "secret-range"
+			mock.secret["secret-range"] = true
+			castAndSucceed("Cast-1")
+			openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
+			local a = db.attempts[1]
+			assert.equal("secret", a.loc.subzone)
+			assert.equal("secret", a.range.spell)
+			assert.equal("unknown", ns.Logic.range(a))
+			assert.equal("secret", a.pocket.autoLootRate)
+			assert.is_nil(ns.selftest.lastError)
+		end)
+
+		it("records auto-loot state, slot timings and slot changes in the window", function()
+			mock.modifiers.AUTOLOOTTOGGLE = true
+			castAndSucceed("Cast-1")
+			mock.loot = { mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }
+			mock.fire("LOOT_READY", true)
+			mock.advance(0.15)
+			mock.fire("LOOT_SLOT_CLEARED", 1)
+			mock.fire("LOOT_SLOT_CHANGED", 2)
+			mock.advance(0.1)
+			mock.fire("LOOT_SLOT_CLEARED", 2)
+			mock.fire("LOOT_CLOSED")
+			local p = db.attempts[1].pocket
+			assert.equal("1", p.autoLootDefault)
+			assert.equal("150", p.autoLootRate)
+			assert.is_true(p.autoLootToggle)
+			assert.same({ [1] = 150, [2] = 250 }, p.cleared)
+			assert.same({ { slot = 2, dtMs = 150 } }, p.changed)
+			assert.equal("all_taken", p.closedBy)
+			assert.equal("looted", ns.Logic.classifyAttempt(db.attempts[1], mock.clock))
+		end)
+
+		it("guesses opener when the opener is sent while the window is open with loot left", function()
+			castAndSucceed("Cast-1")
+			mock.loot = { mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }
+			mock.fire("LOOT_READY", false)
+			mock.fire("LOOT_SLOT_CLEARED", 1)
+			mock.advance(0.1)
+			mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-2", 1833)
+			mock.advance(0.05)
+			mock.fire("LOOT_CLOSED")
+			local p = db.attempts[1].pocket
+			assert.equal("opener", p.closedBy)
+			assert.equal(50, p.closeVsOpenerMs)
+			assert.is_nil(p.closeVsOpenerResultMs)
+			-- the opener's result after the close fills in the second gap
+			mock.advance(0.1)
+			mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-2", 1833)
+			assert.equal(-100, p.closeVsOpenerResultMs)
+			assert.equal(1, ns.Logic.summarize(db.attempts, mock.clock).closedBy.opener)
+		end)
+
+		it("guesses opener when the opener SENT lands just after LOOT_CLOSED", function()
+			castAndSucceed("Cast-1")
+			mock.loot = { mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }
+			mock.fire("LOOT_READY", false)
+			mock.advance(0.3)
+			mock.fire("LOOT_CLOSED")
+			local p = db.attempts[1].pocket
+			assert.equal("manual", p.closedBy)
+			assert.is_nil(p.closeVsOpenerMs)
+			mock.advance(0.2)
+			mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-2", 6770)
+			assert.equal("opener", p.closedBy)
+			assert.equal(-200, p.closeVsOpenerMs)
+		end)
+
+		it("guesses manual when loot is left and no opener came near the close", function()
+			castAndSucceed("Cast-1")
+			mock.loot = { mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }
+			mock.fire("LOOT_READY", false)
+			mock.fire("LOOT_SLOT_CLEARED", 1)
+			mock.advance(1)
+			mock.fire("LOOT_CLOSED")
+			mock.advance(1)
+			mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-2", 1833)
+			local p = db.attempts[1].pocket
+			assert.equal("manual", p.closedBy)
+			assert.equal(-1000, p.closeVsOpenerMs)
+			local s = ns.Logic.summarize(db.attempts, mock.clock)
+			assert.same({ opener = 0, all_taken = 0, manual = 1, empty = 0 }, s.closedBy)
+			assert.same({ shown = 1, notShown = 0 }, s.range.inRange)
+		end)
+
+		it("calls a window with no slots empty, not all_taken", function()
+			castAndSucceed("Cast-1")
+			openLoot({}, {})
+			assert.equal("empty", db.attempts[1].pocket.closedBy)
+		end)
+
+		it("records missing CheckInteractDistance and C_Map without losing the attempt", function()
+			_G.CheckInteractDistance = nil
+			_G.C_Map = nil
+			castAndSucceed("Cast-1")
+			local a = db.attempts[1]
+			assert.equal("missing", a.range.interact)
+			assert.equal("C_Map", a.loc.missing)
+		end)
+
+		it("prints the closed-by and range lines in /pocketlog", function()
+			castAndSucceed("Cast-1")
+			openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
+			SlashCmdList.POCKETLOG("")
+			assert.matches("closed by: opener 0, all taken 1, manual 0, empty 0", mock.chat[#mock.chat - 1], 1, true)
+			assert.matches("by range: in 1/0, out 0/0, unknown 0/0", mock.chat[#mock.chat], 1, true)
+		end)
 	end)
 end)

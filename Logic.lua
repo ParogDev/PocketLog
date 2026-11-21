@@ -19,6 +19,7 @@ local function slotsLeft(session)
 	if not session or not session.slots then
 		return left
 	end
+	-- cleared[slot] is the ms after readyAt the slot was taken (0.3.0) or true (older logs): any truthy value
 	local cleared = session.cleared or {}
 	for _, s in ipairs(session.slots) do
 		if not cleared[s.slot] then
@@ -74,8 +75,12 @@ function Logic.classifyAttempt(a, now, wait)
 		end
 		return "looted"
 	end
+	-- GetTimePreciseSec restarts with the PC: a saved time later than `now` is from before a reboot, so old.
+	local function recent(at)
+		return now and type(at) == "number" and now >= at and now - at < wait
+	end
 	if a.result == "succeeded" then
-		if now and a.resultAt and now - a.resultAt < wait then
+		if recent(a.resultAt) then
 			return "pending"
 		end
 		return "never_shown"
@@ -83,7 +88,7 @@ function Logic.classifyAttempt(a, now, wait)
 	if a.result == "failed" or a.result == "interrupted" then
 		return "failed"
 	end
-	if now and a.sentAt and now - a.sentAt < wait then
+	if recent(a.sentAt) then
 		return "pending"
 	end
 	-- Sent, then nothing: no success, no failure. The server dropped it or the event was secret.
@@ -168,6 +173,42 @@ function Logic.bucket(v, edges)
 	return lo .. "+"
 end
 
+-- Did the window show? Only outcomes that answer it: no_pockets, failed and pending say nothing.
+local SHOWN = { looted = true, left = true, empty = true, never_shown = false }
+
+-- "moving" | "still" | "unknown" at the Pick Pocket cast: the SENT snapshot, else the SUCCEEDED one.
+function Logic.movement(a)
+	for _, key in ipairs({ "move", "moveAtResult" }) do
+		local m = a[key]
+		if type(m) == "table" then
+			if m.moving == true or (type(m.speed) == "number" and m.speed > 0) then
+				return "moving"
+			end
+			if m.moving == false then
+				return "still"
+			end
+		end
+	end
+	return "unknown"
+end
+
+-- "inRange" | "outOfRange" | "unknown": C_Spell.IsSpellInRange at the Pick Pocket send.
+function Logic.range(a)
+	-- not `type(...) == "table" and a.range.spell`: that gives false (out of range) for an attempt without range
+	if type(a.range) ~= "table" then
+		return "unknown"
+	end
+	local r = a.range.spell
+	if r == true then
+		return "inRange"
+	elseif r == false then
+		return "outOfRange"
+	end
+	return "unknown"
+end
+
+Logic.CLOSED_BY = { "opener", "all_taken", "manual", "empty" }
+
 Logic.GAP_EDGES = { 250, 500, 1000, 2000 }
 Logic.LAT_EDGES = { 50, 100, 200, 400 }
 
@@ -181,6 +222,20 @@ function Logic.summarize(attempts, now)
 		pocketItems = 0,
 		carry = { left = 0, carried = 0, neverShown = 0, neverShownSecond = 0 },
 		openerBeforeWindow = 0,
+		-- window shown or not, split by movement at the Pick Pocket cast
+		move = {
+			still = { shown = 0, notShown = 0 },
+			moving = { shown = 0, notShown = 0 },
+			unknown = { shown = 0, notShown = 0 },
+		},
+		-- what closed the pocket window (Recorder's guess), over pocket windows that recorded it
+		closedBy = { opener = 0, all_taken = 0, manual = 0, empty = 0 },
+		-- window shown or not, split by C_Spell.IsSpellInRange at the Pick Pocket cast
+		range = {
+			inRange = { shown = 0, notShown = 0 },
+			outOfRange = { shown = 0, notShown = 0 },
+			unknown = { shown = 0, notShown = 0 },
+		},
 	}
 	for _, k in ipairs(Logic.OUTCOMES) do
 		s.outcome[k] = 0
@@ -218,6 +273,20 @@ function Logic.summarize(attempts, now)
 			if c == "second_loot" then
 				s.carry.neverShownSecond = s.carry.neverShownSecond + 1
 			end
+		end
+		local shown = SHOWN[o]
+		if shown ~= nil then
+			for _, m in ipairs({ s.move[Logic.movement(a)], s.range[Logic.range(a)] }) do
+				if shown then
+					m.shown = m.shown + 1
+				else
+					m.notShown = m.notShown + 1
+				end
+			end
+		end
+		local by = a.pocket and a.pocket.closedBy
+		if type(by) == "string" then
+			s.closedBy[by] = (s.closedBy[by] or 0) + 1
 		end
 		if a.opener and a.opener.sentAt and a.sentAt then
 			local readyAt = a.pocket and a.pocket.readyAt
