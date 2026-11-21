@@ -39,5 +39,5 @@ end
 
 globals = { "PocketLog", "PocketLogDB", "SLASH_POCKETLOG1", "SlashCmdList" }
 
-files["tests/"] = { std = "+busted", globals = { "PocketLog", "PocketLogDB", "_G", "PocketLogClassifyCases" } }
+files["tests/"] = { std = "+busted", globals = { "PocketLog", "PocketLogDB", "_G", "PocketLogClassifyCases", "PocketLogWaits" } }
 exclude_files = { ".luacheckrc", ".release/" }

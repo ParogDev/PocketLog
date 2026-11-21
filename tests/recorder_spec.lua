@@ -251,6 +251,56 @@ describe("Recorder", function()
 		assert.equal(1, #a.corpse)
 	end)
 
+	it("settles a pocket window still open at a reload as closedBy unknown, with what it left", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.advance(0.2)
+		mock.loot = { mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }
+		mock.fire("LOOT_READY", false)
+		mock.fire("LOOT_SLOT_CLEARED", 1)
+		local a = db.attempts[1]
+		assert.equal("pending", ns.Logic.classifyAttempt(a, mock.clock))
+		-- the client reloads with the window open: no LOOT_CLOSED, no PLAYER_LOGOUT (a crash)
+		mock.frames = {}
+		mock.advance(1)
+		ns = mock.loadAddon(".", db)
+		a = ns.db.attempts[1]
+		assert.equal("unknown", a.pocket.closedBy)
+		assert.is_nil(a.pocket.closedAt)
+		assert.same({ 2 }, a.pocket.left)
+		assert.equal(1, ns.Recorder.stats.closeUnknown)
+		assert.equal("left", ns.Logic.classifyAttempt(a, mock.clock))
+	end)
+
+	it("settles the open window at logout, before the selftest summary", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.advance(0.2)
+		mock.loot = { mock.moneySlot(MOB, 87) }
+		mock.fire("LOOT_READY", false)
+		mock.fire("PLAYER_LOGOUT")
+		local p = db.attempts[1].pocket
+		assert.equal("unknown", p.closedBy)
+		assert.same({ 1 }, p.left)
+		assert.is_nil(ns.Recorder.session)
+		assert.equal(1, db.selftest.summary.outcome.left)
+		assert.equal(0, db.selftest.summary.outcome.pending)
+		assert.equal(1, db.selftest.summary.closedBy.unknown)
+		assert.same({ attempt = 3, corpse = 120, window = 60 }, db.selftest.waits)
+	end)
+
+	it("leaves closed windows alone when it settles at load", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.advance(0.2)
+		openLoot({ mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }, { 1 })
+		local before = db.attempts[1].pocket.closedBy
+		mock.frames = {}
+		ns = mock.loadAddon(".", db)
+		assert.equal(before, ns.db.attempts[1].pocket.closedBy)
+		assert.equal(0, ns.Recorder.stats.closeUnknown)
+	end)
+
 	it("closes a window whose LOOT_CLOSED was missed when the next one opens", function()
 		mock.loot = { mock.moneySlot("Creature-0-1-0-1-99-0", 5) }
 		mock.fire("LOOT_READY", false)
@@ -410,7 +460,7 @@ describe("Recorder", function()
 			assert.equal("manual", p.closedBy)
 			assert.equal(-1000, p.closeVsOpenerMs)
 			local s = ns.Logic.summarize(db.attempts, mock.clock)
-			assert.same({ opener = 0, all_taken = 0, manual = 1, empty = 0 }, s.closedBy)
+			assert.same({ opener = 0, all_taken = 0, manual = 1, empty = 0, unknown = 0 }, s.closedBy)
 			assert.same({ shown = 1, notShown = 0 }, s.range.inRange)
 		end)
 

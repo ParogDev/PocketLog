@@ -1,8 +1,11 @@
 -- Classifier parity cases: each attempt with the outcome and corpse outcome Logic.lua gives at `now`.
 -- Read by tests/logic_spec.lua (busted) and by the scaffolding's companion/tests/test_pocketlog_report.py
 -- (through companion/wowf_sv.py), so tools/pocketlog_report.py and Logic.lua give the same answers.
--- SavedVariables syntax only (one `Name = { ... }`, no expressions): wowf_sv parses it.
--- Times are GetTimePreciseSec seconds; the attempt wait is 3 s, the corpse wait 120 s.
+-- SavedVariables syntax only (`Name = { ... }` assignments, no expressions): wowf_sv parses it.
+-- Times are GetTimePreciseSec seconds. A case without `now` is a save with no clock (before 0.3.1).
+-- PocketLogWaits: Logic.ATTEMPT_WAIT / CORPSE_WAIT / WINDOW_WAIT. busted checks them against Logic.lua, pytest
+-- against the report's fallback for saves without selftest.waits (before 0.3.3).
+PocketLogWaits = { attempt = 3, corpse = 120, window = 60 }
 PocketLogClassifyCases = {
 	{
 		name = "looted: every slot taken",
@@ -104,6 +107,71 @@ PocketLogClassifyCases = {
 		},
 		outcome = "pending",
 		corpse = "pending",
+	},
+	{
+		name = "window wait boundary: open 59.9 s at the save is pending",
+		now = 1000,
+		attempt = {
+			result = "succeeded",
+			sentAt = 940,
+			pocket = { readyAt = 940.1, slots = { { slot = 1, type = 1, itemID = 5432 } }, cleared = {} },
+			corpse = {},
+		},
+		outcome = "pending",
+		corpse = "pending",
+	},
+	{
+		name = "window wait boundary: open 60 s without a close is settled",
+		now = 1000,
+		attempt = {
+			result = "succeeded",
+			sentAt = 939.8,
+			pocket = { readyAt = 940, slots = { { slot = 1, type = 1, itemID = 5432 } }, cleared = {} },
+			corpse = {},
+		},
+		outcome = "left",
+		corpse = "pending",
+	},
+	{
+		name = "window open at a reload, settled by the addon (closedBy unknown)",
+		now = 1000,
+		attempt = {
+			result = "succeeded",
+			sentAt = 999,
+			pocket = {
+				readyAt = 999.3,
+				closedBy = "unknown",
+				left = { 2 },
+				slots = { { slot = 1, type = 2, money = 50 }, { slot = 2, type = 1, itemID = 5432 } },
+				cleared = { [1] = 200 },
+			},
+			corpse = {},
+		},
+		outcome = "left",
+		corpse = "pending",
+	},
+	{
+		name = "window never closed, the corpse later holds what it left",
+		now = 1000,
+		attempt = {
+			result = "succeeded",
+			sentAt = 500,
+			pocket = { readyAt = 500.3, slots = { { slot = 1, type = 1, itemID = 5432 } }, cleared = {} },
+			corpse = { { slots = { { slot = 1, type = 1, itemID = 5432 } } } },
+		},
+		outcome = "left",
+		corpse = "normal_plus_pocket",
+	},
+	{
+		name = "window never closed in a save without a clock: settled",
+		attempt = {
+			result = "succeeded",
+			sentAt = 500,
+			pocket = { readyAt = 500.3, slots = { { slot = 1, type = 2, money = 5 } }, cleared = { [1] = 90 } },
+			corpse = {},
+		},
+		outcome = "looted",
+		corpse = "not_looted",
 	},
 	{
 		name = "already picked wins over a succeeded cast",

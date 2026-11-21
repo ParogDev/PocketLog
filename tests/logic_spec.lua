@@ -56,8 +56,9 @@ describe("Logic", function()
 			assert.equal("empty", L.classifyAttempt({ result = "succeeded", pocket = { slots = {}, closedAt = 1 } }))
 		end)
 
-		it("keeps an open window pending", function()
-			assert.equal("pending", L.classifyAttempt({ result = "succeeded", pocket = { slots = { money(1, 5) } } }))
+		it("keeps a window opened under the window wait ago pending", function()
+			local a = { result = "succeeded", pocket = { readyAt = 99, slots = { money(1, 5) } } }
+			assert.equal("pending", L.classifyAttempt(a, 100))
 		end)
 	end)
 
@@ -171,7 +172,8 @@ describe("Logic", function()
 			{ result = "succeeded", resultAt = 1, corpse = {} }, -- an old attempt without range
 		}
 		local s = L.summarize(attempts, 100)
-		assert.same({ opener = 1, all_taken = 1, manual = 0, empty = 0 }, s.closedBy) -- corpse windows don't count
+		-- corpse windows don't count
+		assert.same({ opener = 1, all_taken = 1, manual = 0, empty = 0, unknown = 0 }, s.closedBy)
 		assert.same({ shown = 1, notShown = 0 }, s.range.inRange)
 		assert.same({ shown = 1, notShown = 1 }, s.range.outOfRange)
 		assert.same({ shown = 0, notShown = 1 }, s.range.unknown)
@@ -209,10 +211,38 @@ describe("Logic", function()
 		setfenv(chunk, env)
 		chunk()
 		local cases = env.PocketLogClassifyCases
-		assert.is_true(#cases >= 20)
+		assert.is_true(#cases >= 25)
 		for _, c in ipairs(cases) do
 			assert.equal(c.outcome, L.classifyAttempt(c.attempt, c.now), c.name)
 			assert.equal(c.corpse, L.classifyCorpse(c.attempt, c.now), c.name)
 		end
+		-- the report falls back to these for saves without selftest.waits; pytest checks its side
+		assert.same({ attempt = L.ATTEMPT_WAIT, corpse = L.CORPSE_WAIT, window = L.WINDOW_WAIT }, env.PocketLogWaits)
+	end)
+
+	describe("unclosed window", function()
+		local function open(readyAt, extra)
+			local p = { readyAt = readyAt, slots = { item(1, 5432) }, cleared = {} }
+			for k, v in pairs(extra or {}) do
+				p[k] = v
+			end
+			return { result = "succeeded", sentAt = readyAt - 0.3, pocket = p, corpse = {} }
+		end
+
+		it("is pending within the window wait only", function()
+			assert.equal("pending", L.classifyAttempt(open(990), 1000))
+			assert.equal("left", L.classifyAttempt(open(900), 1000))
+			assert.equal("left", L.classifyAttempt(open(990), 5)) -- clock restarted
+			assert.equal("left", L.classifyAttempt(open(990), nil)) -- no clock in the save
+			assert.equal("pending", L.classifyAttempt(open(900), 1000, nil, 200)) -- the wait from the caller
+		end)
+
+		it("is settled at once when Recorder marked it closedBy unknown", function()
+			assert.equal("left", L.classifyAttempt(open(999, { closedBy = "unknown" }), 1000))
+			local s = L.summarize({ open(999, { closedBy = "unknown" }) }, 1000)
+			assert.equal(1, s.closedBy.unknown)
+			assert.equal(1, s.outcome.left)
+			assert.equal(0, s.outcome.pending)
+		end)
 	end)
 end)

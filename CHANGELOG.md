@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- A loot window that never got `LOOT_CLOSED` (open at a reload, a logout, a disconnect or a crash) is settled at the next load and at logout: `closedBy = "unknown"`, `left` from the slots not taken while it was open, no `closedAt`. Such a window used to stay `pending` in the summary and the report forever. `Recorder.stats.closeUnknown` counts them; `/pocketlog` prints `unknown` in the closed-by line.
+- An unclosed window counts as `pending` only for 60 s after it opened (`Logic.WINDOW_WAIT`, the same limit Recorder already used for a missed close), and never in a save without a clock.
+- The selftest records `waits` (`attempt`, `corpse`, `window`, in seconds), so the scaffolding's report classifies with the addon's own waits. `tests/fixtures/classify_cases.lua` gains `PocketLogWaits` and the unclosed-window cases.
+
 ## 0.3.2
 
 - A UI error goes to the latest cast sent within 1.5 s: the opener, the spell cast between the Pick Pocket and the opener (`nextCast.errors`), or the Pick Pocket itself. Before, an error after that in-between spell was filed on the Pick Pocket.
