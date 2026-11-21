@@ -277,12 +277,14 @@ R.byGUID = {} -- mob GUID -> latest attempt
 R.last = nil -- latest attempt
 R.session = nil -- the open loot window: { rec = session, attempt = a, kind = "pocket"|"corpse"|"other" }
 R.closed = nil -- the last closed window, for late chat and money events
+R.recentClosed = {} -- windows closed in the last OPENER_WINDOW seconds, newest last: { rec, attempt }
 R.money = nil -- GetMoney() at the last look
 
 -- What closed a loot window, a guess from the timings: "all_taken" when no slot is left (the client closes an
--- emptied window itself), else "opener" when the attempt's opener was sent within CLOSE_BY_OPENER of the
--- close or while the window was open, else "manual". Run again when the opener or its result arrives after
--- the close, so a SENT that lands just after LOOT_CLOSED still counts.
+-- emptied window itself), else "opener" when the attempt's opener was sent at the window's mob within
+-- CLOSE_BY_OPENER of the close or while the window was open, else "manual". The window's attempt is found by
+-- the loot's source GUID, so its opener is the one cast after that mob's Pick Pocket. Run again when the
+-- opener or its result arrives after the close, so a SENT that lands just after LOOT_CLOSED still counts.
 local function judgeClose(rec, a)
 	if not rec.closedAt then
 		return
@@ -291,7 +293,9 @@ local function judgeClose(rec, a)
 	rec.closeVsOpenerMs = o and ms(o.sentAt, rec.closedAt) or nil
 	rec.closeVsOpenerResultMs = o and ms(o.resultAt, rec.closedAt) or nil
 	local sent = o and o.sentAt
+	-- an opener cast at another target (sameTarget false) did not interrupt this mob's window
 	local byOpener = type(sent) == "number"
+		and o.sameTarget ~= false
 		and (
 			math.abs(rec.closedAt - sent) <= CLOSE_BY_OPENER
 			or (type(rec.readyAt) == "number" and sent >= rec.readyAt and sent <= rec.closedAt)
@@ -308,10 +312,21 @@ local function judgeClose(rec, a)
 end
 R.judgeClose = judgeClose
 
--- The opener of `a` changed after a window of `a` closed: judge that window again.
+-- The opener of `a` changed after windows of `a` closed: judge each of them again, not only the latest closed
+-- window (another mob's window may have closed since).
 local function rejudgeClosed(a)
-	if R.closed and R.closed.attempt == a then
-		judgeClose(R.closed.rec, a)
+	for _, c in ipairs(R.recentClosed) do
+		if c.attempt == a then
+			judgeClose(c.rec, a)
+		end
+	end
+end
+
+local function rememberClosed(s)
+	local list, t = R.recentClosed, s.rec.closedAt
+	list[#list + 1] = { rec = s.rec, attempt = s.attempt }
+	while #list > 0 and not (type(list[1].rec.closedAt) == "number" and t - list[1].rec.closedAt < OPENER_WINDOW) do
+		table.remove(list, 1)
 	end
 end
 
@@ -319,7 +334,7 @@ function R.attach(db)
 	R.db = db
 	db.attempts = db.attempts or {}
 	db.nextId = db.nextId or (#db.attempts + 1)
-	R.byCast, R.byGUID, R.last, R.session, R.closed = {}, {}, nil, nil, nil
+	R.byCast, R.byGUID, R.last, R.session, R.closed, R.recentClosed = {}, {}, nil, nil, nil, {}
 	-- Corpses can be looted after a reload: index the recent attempts by mob.
 	local from = math.max(1, #db.attempts - 300)
 	for i = from, #db.attempts do
@@ -601,23 +616,70 @@ local function targetIsDead(guid)
 	return nil
 end
 
-function R.onLootReady(autoloot)
-	local t = now()
-	if R.session and not R.session.rec.closedAt then
-		-- LOOT_READY again for the same window, unless that window is stale: a LOOT_CLOSED was missed.
-		if t >= R.session.rec.readyAt and t - R.session.rec.readyAt < STALE_SESSION then
-			R.stats.repeatReady = (R.stats.repeatReady or 0) + 1
-			return
+-- Source GUIDs (non-secret) of a window's slots, as a set, and how many there were.
+local function sourceSet(slots)
+	local set, n = {}, 0
+	for _, s in ipairs(slots or {}) do
+		for _, src in ipairs(s.sources or {}) do
+			if type(src.guid) == "string" and src.guid ~= SECRET and not set[src.guid] then
+				set[src.guid] = true
+				n = n + 1
+			end
 		end
-		R.session.rec.closeMissed = true
-		R.stats.closeMissed = (R.stats.closeMissed or 0) + 1
-		R.onLootClosed()
 	end
+	return set, n
+end
+
+-- Is a LOOT_READY with these slots the open window firing again? Same mobs (every source GUID of the new slots
+-- was a source of the open window), no more slots than it had. A window without readable GUIDs can't be told
+-- apart from a new one: not the same.
+local function sameWindow(rec, slots)
+	if #slots == 0 or #slots > #(rec.slots or {}) then
+		return false
+	end
+	local old = sourceSet(rec.slots)
+	local new, n = sourceSet(slots)
+	if n == 0 then
+		return false
+	end
+	for g in pairs(new) do
+		if not old[g] then
+			return false
+		end
+	end
+	return true
+end
+R.sameWindow = sameWindow
+
+local function readSlots()
 	local n = GetNumLootItems() or 0
 	local slots = {}
 	for i = 1, n do
 		slots[#slots + 1] = readSlot(i)
 	end
+	return slots
+end
+
+function R.onLootReady(autoloot)
+	local t = now()
+	local slots
+	if R.session and not R.session.rec.closedAt then
+		-- LOOT_READY again for the same window. Past STALE_SESSION it is the same window only when it shows the
+		-- same mobs' loot; otherwise its LOOT_CLOSED was missed and this is a new window.
+		local rec = R.session.rec
+		local fresh = t >= rec.readyAt and t - rec.readyAt < STALE_SESSION
+		if not fresh then
+			slots = readSlots()
+		end
+		if fresh or sameWindow(rec, slots) then
+			R.stats.repeatReady = (R.stats.repeatReady or 0) + 1
+			return
+		end
+		rec.closeMissed = true
+		R.stats.closeMissed = (R.stats.closeMissed or 0) + 1
+		R.onLootClosed()
+	end
+	slots = slots or readSlots()
 	local a, guid = attemptFor(slots)
 	local last = R.last
 	if not a and last and #slots == 0 and type(last.sentAt) == "number" and t >= last.sentAt then
@@ -701,6 +763,7 @@ function R.onLootClosed()
 	end
 	judgeClose(rec, s.attempt)
 	R.closed, R.session = s, nil
+	rememberClosed(s)
 end
 
 -- The window money and loot chat belong to: the open one, else one closed in the last CHAT_WINDOW seconds.
