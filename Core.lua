@@ -4,7 +4,7 @@ local ADDON, ns = ...
 
 PocketLog = ns
 
-local R, Logic = ns.Recorder, ns.Logic
+local R, Logic, Bar = ns.Recorder, ns.Logic, ns.Bar
 
 local DB_VERSION = 1
 
@@ -24,7 +24,7 @@ ns.selftest = selftest
 
 -- The version the code says it is: a junction-linked checkout has the packager's unreplaced token in the .toc,
 -- so the selftest would show the same "@project-version@" before and after a change.
-ns.VERSION = "0.3.3"
+ns.VERSION = "0.4.0"
 
 local function version()
 	local ok, v = pcall(C_AddOns.GetAddOnMetadata, ADDON, "Version")
@@ -56,6 +56,7 @@ function selftest.snapshot(phase)
 		counters = R.stats,
 		attempts = #ns.db.attempts,
 		summary = sum,
+		bar = Bar.selftest(),
 		lastError = selftest.lastError,
 	}
 	return ns.db.selftest
@@ -143,6 +144,13 @@ end
 SLASH_POCKETLOG1 = "/pocketlog"
 SlashCmdList.POCKETLOG = function(msg)
 	msg = type(msg) == "string" and msg:lower() or ""
+	local barArg = msg:match("^bar%s*(.-)%s*$")
+	if barArg then
+		for _, line in ipairs(Bar.slash(barArg)) do
+			print(line)
+		end
+		return
+	end
 	if msg == "reset" then
 		ns.db.attempts = {}
 		ns.db.nextId = 1
@@ -154,7 +162,7 @@ SlashCmdList.POCKETLOG = function(msg)
 		print(line)
 	end
 	if msg ~= "" then
-		print("  /pocketlog reset clears the log.")
+		print("  /pocketlog reset clears the log; /pocketlog bar sets the pocket bar.")
 	end
 end
 
@@ -194,7 +202,11 @@ frame:SetScript("OnEvent", function(_, event, ...)
 	if event == "ADDON_LOADED" then
 		if ... == ADDON then
 			ns.initDB(PocketLogDB)
+			guard("bar.init", Bar.init, ns.db)
 			for e in pairs(handlers) do
+				frame:RegisterEvent(e)
+			end
+			for _, e in ipairs(Bar.EXTRA_EVENTS) do
 				frame:RegisterEvent(e)
 			end
 		end
@@ -211,5 +223,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		if fn then
 			guard(event, fn, ...)
 		end
+		-- the bar reads what the recorder just recorded; its own guard, so a bar error never touches recording
+		guard("bar:" .. event, Bar.onEvent, event, ...)
 	end
 end)

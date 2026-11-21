@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: PocketLog
-## Notes: Logs every Pick Pocket and the later corpse loot of the same mob (timing, latency, what was left behind) for offline analysis. Measures only.
+## Notes: Logs every Pick Pocket and the later corpse loot of the same mob (timing, latency, what was left behind) for offline analysis, and shows a bar that says when the opener after a Pick Pocket is safe to press.
 ## Author: ParogDev
 ## Version: @project-version@
 ## SavedVariables: PocketLogDB
@@ -11,4 +11,5 @@
 
 Logic.lua
 Recorder.lua
+Bar.lua
 Core.lua
