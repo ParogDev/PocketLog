@@ -4,8 +4,40 @@ local M = {}
 
 local function noop() end
 
+-- Widget methods the tests don't model (SetSize, SetPoint, Show...) are no-ops; Create* returns another such
+-- widget, so frame code runs without a client. IsShown follows Show/Hide and GetText follows SetText.
+local widgetMeta = {}
+
+local function widget(w)
+	w = setmetatable(w or {}, widgetMeta)
+	function w:Show()
+		self._shown = true
+	end
+	function w:Hide()
+		self._shown = false
+	end
+	function w:IsShown()
+		return self._shown == true
+	end
+	function w:SetText(s)
+		self._text = s
+	end
+	function w:GetText()
+		return self._text
+	end
+	return w
+end
+widgetMeta.__index = function(_, k)
+	if type(k) == "string" and k:sub(1, 6) == "Create" then
+		return function()
+			return widget()
+		end
+	end
+	return noop
+end
+
 local function newFrame()
-	local f = { _events = {} }
+	local f = widget({ _events = {} })
 	function f:RegisterEvent(e)
 		self._events[e] = true
 	end
@@ -38,6 +70,7 @@ function M.install()
 		[1752] = "Sinister Strike",
 	}
 	_G.CreateFrame = newFrame
+	_G.UIParent = widget()
 	_G.DEFAULT_CHAT_FRAME = {
 		AddMessage = function(_, line)
 			M.chat[#M.chat + 1] = line
@@ -200,7 +233,7 @@ end
 -- PLAYER_LOGIN the way the client does.
 function M.loadAddon(dir, saved)
 	local ns = {}
-	for _, f in ipairs({ "Logic.lua", "Recorder.lua", "Core.lua" }) do
+	for _, f in ipairs({ "Logic.lua", "Recorder.lua", "Bar.lua", "Core.lua" }) do
 		local chunk, err = loadfile(dir .. "/" .. f)
 		assert(chunk, err)
 		chunk("PocketLog", ns)
