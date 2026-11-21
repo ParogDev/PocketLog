@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1
+
+- An opener that arrives after its window closed is judged against every window of its own attempt closed in the last 10 s, not only the latest closed window, so another mob's window closing in between no longer leaves `closedBy` at `manual`.
+- An opener cast at a different target (`sameTarget` false) no longer counts as what closed the window.
+- A loot window open over 60 s that fires `LOOT_READY` again with the same mobs' loot is the same window (`repeatReady`), not a missed close.
+- Corpse outcome `pending`: no corpse window yet and the Pick Pocket less than 120 s old. Pending corpses stay out of the carry-over counts.
+- `/pocketlog` prints the `unknown` movement bucket.
+- The selftest records `clock` (GetTimePreciseSec at the save), so the report can tell pending attempts, and `version` falls back to the code's version when the `.toc` holds the packager token.
+- `tests/fixtures/classify_cases.lua`: classifier cases shared with the scaffolding's report script test.
+
 ## 0.3.0
 
 - Each loot window records a guess at what closed it (`closedBy`: `opener`, `all_taken` or `manual`) and how far the close was from the opener's send and result. `/pocketlog` prints the counts for pocket windows.

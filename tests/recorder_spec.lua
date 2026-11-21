@@ -410,6 +410,96 @@ describe("Recorder", function()
 			assert.equal("C_Map", a.loc.missing)
 		end)
 
+		it("judges a late opener against its own mob's window after another window closed", function()
+			castAndSucceed("Cast-1")
+			mock.loot = { mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }
+			mock.fire("LOOT_READY", false)
+			mock.fire("LOOT_SLOT_CLEARED", 1)
+			mock.advance(0.3)
+			mock.fire("LOOT_CLOSED")
+			local p = db.attempts[1].pocket
+			assert.equal("manual", p.closedBy)
+			-- another mob's window (no attempt of its own) opens and closes before the opener's SENT
+			mock.advance(0.05)
+			mock.loot = { mock.moneySlot("Creature-0-1-0-1-99-0", 5) }
+			mock.fire("LOOT_READY", false)
+			mock.advance(0.05)
+			mock.fire("LOOT_CLOSED")
+			mock.advance(0.1)
+			mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-2", 1833)
+			assert.equal("opener", p.closedBy)
+			assert.equal(-200, p.closeVsOpenerMs)
+			mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-2", 1833)
+			assert.equal(-200, p.closeVsOpenerResultMs)
+		end)
+
+		it("does not credit an opener cast at another target with closing the window", function()
+			castAndSucceed("Cast-1")
+			mock.loot = { mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }
+			mock.fire("LOOT_READY", false)
+			mock.fire("LOOT_SLOT_CLEARED", 1)
+			mock.advance(0.1)
+			mock.target = { guid = "Creature-0-1-0-1-77-0", name = "Other", level = 38, dead = false }
+			mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-2", 1833)
+			mock.advance(0.05)
+			mock.fire("LOOT_CLOSED")
+			local a = db.attempts[1]
+			assert.is_false(a.opener.sameTarget)
+			assert.equal("manual", a.pocket.closedBy)
+		end)
+
+		it("takes a LOOT_READY re-fire of the same window past 60 s as the same window", function()
+			castAndSucceed("Cast-1")
+			mock.loot = { mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }
+			mock.fire("LOOT_READY", false)
+			mock.fire("LOOT_SLOT_CLEARED", 1)
+			mock.advance(61)
+			mock.fire("LOOT_READY", false)
+			local a = db.attempts[1]
+			assert.equal(0, ns.Recorder.stats.closeMissed)
+			assert.equal(1, ns.Recorder.stats.repeatReady)
+			assert.is_nil(a.pocket.closedAt)
+			assert.is_nil(a.pocket.closeMissed)
+			mock.fire("LOOT_CLOSED")
+			assert.equal(0, #a.corpse)
+			assert.same({ 2 }, a.pocket.left)
+		end)
+
+		it("still calls a stale window with another mob's loot a missed close", function()
+			castAndSucceed("Cast-1")
+			mock.loot = { mock.moneySlot(MOB, 87) }
+			mock.fire("LOOT_READY", false)
+			mock.advance(61)
+			mock.loot = { mock.moneySlot(MOB, 87), mock.moneySlot("Creature-0-1-0-1-77-0", 5) }
+			assert.is_false(ns.Recorder.sameWindow(db.attempts[1].pocket, { { sources = {} } }))
+			mock.fire("LOOT_READY", false)
+			assert.equal(1, ns.Recorder.stats.closeMissed)
+			assert.is_true(db.attempts[1].pocket.closeMissed)
+		end)
+
+		it("prints the unknown movement bucket in /pocketlog", function()
+			_G.IsPlayerMoving, _G.GetUnitSpeed, _G.IsFalling = nil, nil, nil
+			castAndSucceed("Cast-1")
+			openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
+			SlashCmdList.POCKETLOG("")
+			local line
+			for _, l in ipairs(mock.chat) do
+				if l:find("window shown / not shown:", 1, true) then
+					line = l
+				end
+			end
+			assert.equal("  window shown / not shown: still 0/0, moving 0/0, unknown 1/0", line)
+		end)
+
+		it("reports the code version when the .toc carries the packager's token, and the clock at the save", function()
+			_G.C_AddOns.GetAddOnMetadata = function()
+				return "@project-version@"
+			end
+			mock.fire("PLAYER_LOGOUT")
+			assert.equal(ns.VERSION, db.selftest.version)
+			assert.equal(mock.clock, db.selftest.clock)
+		end)
+
 		it("prints the closed-by and range lines in /pocketlog", function()
 			castAndSucceed("Cast-1")
 			openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
