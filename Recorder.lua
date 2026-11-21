@@ -345,7 +345,8 @@ function R.settleOpen(db)
 		local cleared = rec.cleared or {}
 		rec.left = {}
 		for _, slot in ipairs(rec.slots) do
-			if not cleared[slot.slot] then
+			-- runs in ADDON_LOADED: a malformed saved entry must not stop the load
+			if type(slot) == "table" and not cleared[slot.slot] then
 				rec.left[#rec.left + 1] = slot.slot
 			end
 		end

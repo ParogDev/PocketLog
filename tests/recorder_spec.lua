@@ -289,6 +289,15 @@ describe("Recorder", function()
 		assert.same({ attempt = 3, corpse = 120, window = 60 }, db.selftest.waits)
 	end)
 
+	it("loads past a malformed saved window when it settles", function()
+		local saved =
+			{ attempts = { { sentAt = 1, corpse = {}, pocket = { slots = { 5, { slot = 2 } }, cleared = {} } } } }
+		mock.frames = {}
+		ns = mock.loadAddon(".", saved)
+		assert.equal("unknown", ns.db.attempts[1].pocket.closedBy)
+		assert.same({ 2 }, ns.db.attempts[1].pocket.left)
+	end)
+
 	it("leaves closed windows alone when it settles at load", function()
 		pickpocket("Cast-1")
 		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
