@@ -3,13 +3,21 @@
 --
 -- Attempt shape (all times on the GetTimePreciseSec clock, seconds; `t` is wall clock):
 --   { id, t, guid, mob = { name, level, classification }, zone, castGUID, spellID,
---     sentAt, lat = { home, world }, result = "sent"|"succeeded"|"failed"|"interrupted", resultAt,
+--     sentAt, lat = { home, world }, move = { moving, speed, falling }, moveAtResult,
+--     result = "sent"|"succeeded"|"failed"|"interrupted", resultAt, resultMs,
+--     sqw = SpellQueueWindow CVar (string, cached at login and on CVAR_UPDATE),
+--     range = { spell = C_Spell.IsSpellInRange (true|false|nil), interact = CheckInteractDistance 3 | "blocked" },
+--     loc = { mapID, x, y (0..1, 3 decimals; nil without a position), subzone },
 --     errors = { { kind, msg, errType, dtMs } },
 --     pocket = session | nil, corpse = { session, ... },
---     opener = { spellID, name, isOpener, sentAt, dtMs, lat, result } }
+--     opener = { spellID, name, isOpener, sentAt, dtMs, lat, result, resultAt }, nextCast = same shape }
 -- Session shape: { readyAt, dtMs (from the cast), autoloot, opened, targetDead, slots = { slot... },
---     cleared = { [slot] = true }, closedAt, left = { slot numbers }, money = copper gained (PLAYER_MONEY),
---     chat = { { kind, text, dtMs } } }
+--     autoLootDefault, autoLootRate (raw CVar strings), autoLootToggle (IsModifiedClick("AUTOLOOTTOGGLE")),
+--     cleared = { [slot] = ms after readyAt }, changed = { { slot, dtMs } } (LOOT_SLOT_CHANGED),
+--     closedAt, openMs, left = { slot numbers }, closedBy = "opener"|"all_taken"|"manual" (a guess),
+--     closeVsOpenerMs = closedAt - opener.sentAt, closeVsOpenerResultMs = closedAt - opener.resultAt,
+--     money = copper gained (PLAYER_MONEY), chat = { { kind, text, dtMs } } }
+-- Every value read from the client goes through safe(): a secret is stored as "secret".
 -- Slot shape: { slot, type, name, qty, quality, link, itemID, isCoin, money, sources = { { guid, qty } } }
 local _ADDON, ns = ...
 
@@ -23,6 +31,7 @@ local OPENER_WINDOW = 10 -- seconds after the cast in which the next spell count
 local ERROR_WINDOW = 1.5 -- seconds after a cast in which a UI error belongs to it
 local CHAT_WINDOW = 2 -- seconds after a loot window closed in which money and loot chat still belong to it
 local STALE_SESSION = 60 -- a loot window open this long without LOOT_CLOSED missed its close event
+local CLOSE_BY_OPENER = 0.3 -- an opener sent this close to LOOT_CLOSED (either side) is taken as what closed it
 
 R.stats = {
 	events = 0,
@@ -88,6 +97,84 @@ local function movement()
 	return m
 end
 R.movement = movement
+
+-- A CVar's raw string, "secret", or nil when C_CVar is missing or the call fails.
+local function cvar(name)
+	if not (C_CVar and C_CVar.GetCVar) then
+		return nil
+	end
+	local ok, v = pcall(C_CVar.GetCVar, name)
+	if not ok then
+		return nil
+	end
+	return safe(v)
+end
+R.cvar = cvar
+
+R.cvars = {} -- cached CVars stamped on each attempt
+function R.refreshCVars()
+	R.cvars.spellQueueWindow = cvar("SpellQueueWindow")
+	return R.cvars
+end
+
+function R.onCVarUpdate(name)
+	if type(name) == "string" and not isSecret(name) and name:lower() == "spellqueuewindow" then
+		R.refreshCVars()
+	end
+end
+
+-- Range to the target at the Pick Pocket send. CheckInteractDistance is protected against hostile units in
+-- combat on Mainline: a failed call is stored as "blocked".
+local function rangeAt(spellID)
+	local r = {}
+	if C_Spell and C_Spell.IsSpellInRange and type(spellID) == "number" then
+		local ok, inRange = pcall(C_Spell.IsSpellInRange, spellID, "target")
+		if ok then
+			r.spell = safe(inRange)
+		else
+			r.spell = "error"
+		end
+	end
+	local ok, near = pcall(CheckInteractDistance, "target", 3)
+	if ok then
+		r.interact = safe(near)
+	else
+		r.interact = "blocked"
+	end
+	return r
+end
+R.rangeAt = rangeAt
+
+local function round3(v)
+	if type(v) ~= "number" then
+		return v
+	end
+	return math.floor(v * 1000 + 0.5) / 1000
+end
+
+-- Where the player stands: { mapID, x, y, subzone }. No position (an instance, a map without one) is fine.
+local function location()
+	local loc = {}
+	local okM, mapID = pcall(C_Map.GetBestMapForUnit, "player")
+	if okM then
+		loc.mapID = safe(mapID)
+	end
+	if type(loc.mapID) == "number" then
+		local okP, pos = pcall(C_Map.GetPlayerMapPosition, loc.mapID, "player")
+		if okP and pos ~= nil and not isSecret(pos) then
+			local okXY, x, y = pcall(pos.GetXY, pos)
+			if okXY then
+				loc.x, loc.y = round3(safe(x)), round3(safe(y))
+			end
+		end
+	end
+	local okZ, sub = pcall(GetSubZoneText)
+	if okZ then
+		loc.subzone = safe(sub)
+	end
+	return loc
+end
+R.location = location
 
 -- ---------------------------------------------------------------------------------------------------------
 -- Spells: resolved by name through C_Spell (enUS client), else by known ids checked against their name.
@@ -181,6 +268,40 @@ R.session = nil -- the open loot window: { rec = session, attempt = a, kind = "p
 R.closed = nil -- the last closed window, for late chat and money events
 R.money = nil -- GetMoney() at the last look
 
+-- What closed a loot window, a guess from the timings: "all_taken" when no slot is left (the client closes an
+-- emptied window itself), else "opener" when the attempt's opener was sent within CLOSE_BY_OPENER of the
+-- close or while the window was open, else "manual". Run again when the opener or its result arrives after
+-- the close, so a SENT that lands just after LOOT_CLOSED still counts.
+local function judgeClose(rec, a)
+	if not rec.closedAt then
+		return
+	end
+	local o = a and a.opener
+	rec.closeVsOpenerMs = o and ms(o.sentAt, rec.closedAt) or nil
+	rec.closeVsOpenerResultMs = o and ms(o.resultAt, rec.closedAt) or nil
+	local sent = o and o.sentAt
+	local byOpener = type(sent) == "number"
+		and (
+			math.abs(rec.closedAt - sent) <= CLOSE_BY_OPENER
+			or (type(rec.readyAt) == "number" and sent >= rec.readyAt and sent <= rec.closedAt)
+		)
+	if #(rec.left or {}) == 0 then
+		rec.closedBy = "all_taken"
+	elseif byOpener then
+		rec.closedBy = "opener"
+	else
+		rec.closedBy = "manual"
+	end
+end
+R.judgeClose = judgeClose
+
+-- The opener of `a` changed after a window of `a` closed: judge that window again.
+local function rejudgeClosed(a)
+	if R.closed and R.closed.attempt == a then
+		judgeClose(R.closed.rec, a)
+	end
+end
+
 function R.attach(db)
 	R.db = db
 	db.attempts = db.attempts or {}
@@ -231,6 +352,9 @@ local function newAttempt(castGUID, spellID)
 		sentAt = now(),
 		lat = latency(),
 		move = movement(),
+		sqw = R.cvars.spellQueueWindow,
+		range = rangeAt((R.resolved.pickpocket and R.resolved.pickpocket.spellID) or spellID),
+		loc = location(),
 		result = "sent",
 		errors = {},
 		corpse = {},
@@ -303,11 +427,12 @@ function R.onSpellSent(unit, _target, castGUID, spellID)
 	}
 	if isOpener then
 		a.opener = rec
+		rejudgeClosed(a)
 	else
 		a.nextCast = rec
 	end
 	if type(castGUID) == "string" then
-		R.byCast[castGUID] = { cast = rec }
+		R.byCast[castGUID] = { cast = rec, attempt = a }
 	end
 end
 
@@ -324,6 +449,9 @@ local function castResult(unit, castGUID, spellID, result)
 		if a.cast.result == "sent" then
 			a.cast.result = result
 			a.cast.resultAt = now()
+			if a.attempt and a.attempt.opener == a.cast then
+				rejudgeClosed(a.attempt)
+			end
 		end
 		return
 	end
@@ -490,10 +618,17 @@ function R.onLootReady(autoloot)
 		autoloot = safe(autoloot),
 		slots = slots,
 		cleared = {},
+		changed = {},
 		chat = {},
 		money = 0,
 		targetDead = targetIsDead(guid),
+		autoLootDefault = cvar("autoLootDefault"),
+		autoLootRate = cvar("autoLootRate"),
 	}
+	local okT, toggle = pcall(IsModifiedClick, "AUTOLOOTTOGGLE")
+	if okT then
+		rec.autoLootToggle = safe(toggle)
+	end
 	local kind = "other"
 	if a then
 		rec.dtMs = ms(a.sentAt, t)
@@ -524,7 +659,16 @@ end
 
 function R.onLootSlotCleared(slot)
 	if R.session and type(slot) == "number" then
-		R.session.rec.cleared[slot] = true
+		-- ms after the window was ready: a number, so still truthy for Logic.slotsLeft (0 is truthy in Lua)
+		R.session.rec.cleared[slot] = ms(R.session.rec.readyAt, now()) or true
+	end
+end
+
+function R.onLootSlotChanged(slot)
+	if R.session and type(slot) == "number" then
+		local rec = R.session.rec
+		rec.changed = rec.changed or {}
+		rec.changed[#rec.changed + 1] = { slot = slot, dtMs = ms(rec.readyAt, now()) }
 	end
 end
 
@@ -542,6 +686,7 @@ function R.onLootClosed()
 			rec.left[#rec.left + 1] = slot.slot
 		end
 	end
+	judgeClose(rec, s.attempt)
 	R.closed, R.session = s, nil
 end
 

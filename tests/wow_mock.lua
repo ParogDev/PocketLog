@@ -140,6 +140,49 @@ function M.install()
 	_G.IsFalling = function()
 		return false
 	end
+	M.cvars = { SpellQueueWindow = "400", autoLootDefault = "1", autoLootRate = "150" }
+	_G.C_CVar = {
+		GetCVar = function(name)
+			return M.cvars[name]
+		end,
+	}
+	M.modifiers = {} -- action -> true while its modifier is held
+	_G.IsModifiedClick = function(action)
+		return M.modifiers[action] == true
+	end
+	M.inSpellRange = true -- C_Spell.IsSpellInRange's answer (true, false or nil)
+	_G.C_Spell.IsSpellInRange = function()
+		return M.inSpellRange
+	end
+	M.interact = true
+	M.interactBlocked = false -- true: CheckInteractDistance raises, as against a hostile unit in combat
+	_G.CheckInteractDistance = function()
+		if M.interactBlocked then
+			error("CheckInteractDistance: protected")
+		end
+		return M.interact
+	end
+	M.mapID = 1417 -- Arathi Highlands
+	M.pos = { 0.45678, 0.61234 } -- nil: no position on this map
+	M.subzone = "Stromgarde Keep"
+	_G.C_Map = {
+		GetBestMapForUnit = function()
+			return M.mapID
+		end,
+		GetPlayerMapPosition = function()
+			if not M.pos then
+				return nil
+			end
+			local p = { x = M.pos[1], y = M.pos[2] }
+			function p:GetXY()
+				return self.x, self.y
+			end
+			return p
+		end,
+	}
+	_G.GetSubZoneText = function()
+		return M.subzone
+	end
 	_G.SPELL_FAILED_TARGET_NO_POCKETS = "No pockets to pick"
 	_G.ERR_ALREADY_PICKPOCKETED = "Your target has already had its pockets picked"
 	_G.SPELL_FAILED_TARGET_AFFECTING_COMBAT = "Target is in combat"

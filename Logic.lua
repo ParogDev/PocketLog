@@ -19,6 +19,7 @@ local function slotsLeft(session)
 	if not session or not session.slots then
 		return left
 	end
+	-- cleared[slot] is the ms after readyAt the slot was taken (0.3.0) or true (older logs): any truthy value
 	local cleared = session.cleared or {}
 	for _, s in ipairs(session.slots) do
 		if not cleared[s.slot] then
@@ -191,6 +192,23 @@ function Logic.movement(a)
 	return "unknown"
 end
 
+-- "inRange" | "outOfRange" | "unknown": C_Spell.IsSpellInRange at the Pick Pocket send.
+function Logic.range(a)
+	-- not `type(...) == "table" and a.range.spell`: that gives false (out of range) for an attempt without range
+	if type(a.range) ~= "table" then
+		return "unknown"
+	end
+	local r = a.range.spell
+	if r == true then
+		return "inRange"
+	elseif r == false then
+		return "outOfRange"
+	end
+	return "unknown"
+end
+
+Logic.CLOSED_BY = { "opener", "all_taken", "manual" }
+
 Logic.GAP_EDGES = { 250, 500, 1000, 2000 }
 Logic.LAT_EDGES = { 50, 100, 200, 400 }
 
@@ -208,6 +226,14 @@ function Logic.summarize(attempts, now)
 		move = {
 			still = { shown = 0, notShown = 0 },
 			moving = { shown = 0, notShown = 0 },
+			unknown = { shown = 0, notShown = 0 },
+		},
+		-- what closed the pocket window (Recorder's guess), over pocket windows that recorded it
+		closedBy = { opener = 0, all_taken = 0, manual = 0 },
+		-- window shown or not, split by C_Spell.IsSpellInRange at the Pick Pocket cast
+		range = {
+			inRange = { shown = 0, notShown = 0 },
+			outOfRange = { shown = 0, notShown = 0 },
 			unknown = { shown = 0, notShown = 0 },
 		},
 	}
@@ -250,12 +276,17 @@ function Logic.summarize(attempts, now)
 		end
 		local shown = SHOWN[o]
 		if shown ~= nil then
-			local m = s.move[Logic.movement(a)]
-			if shown then
-				m.shown = m.shown + 1
-			else
-				m.notShown = m.notShown + 1
+			for _, m in ipairs({ s.move[Logic.movement(a)], s.range[Logic.range(a)] }) do
+				if shown then
+					m.shown = m.shown + 1
+				else
+					m.notShown = m.notShown + 1
+				end
 			end
+		end
+		local by = a.pocket and a.pocket.closedBy
+		if type(by) == "string" then
+			s.closedBy[by] = (s.closedBy[by] or 0) + 1
 		end
 		if a.opener and a.opener.sentAt and a.sentAt then
 			local readyAt = a.pocket and a.pocket.readyAt
