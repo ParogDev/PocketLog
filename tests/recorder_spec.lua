@@ -1,0 +1,190 @@
+local mock = require("tests.wow_mock")
+
+describe("Recorder", function()
+	local ns, db
+	local MOB = "Creature-0-1-0-1-2585-0000ABCD"
+
+	before_each(function()
+		mock.install()
+		ns = mock.loadAddon(".")
+		db = ns.db
+		mock.target = { guid = MOB, name = "Stromgarde Soldier", level = 38, dead = false }
+	end)
+
+	local function pickpocket(castGUID)
+		mock.fire("UNIT_SPELLCAST_SENT", "player", "Stromgarde Soldier", castGUID, 921)
+		mock.advance(0.1)
+	end
+
+	local function openLoot(slots, cleared)
+		mock.loot = slots
+		mock.fire("LOOT_READY", false)
+		mock.fire("LOOT_OPENED", false)
+		for _, i in ipairs(cleared or {}) do
+			mock.fire("LOOT_SLOT_CLEARED", i)
+		end
+		mock.advance(0.5)
+		mock.fire("LOOT_CLOSED")
+		mock.loot = {}
+	end
+
+	it("resolves Pick Pocket and the openers through C_Spell by name", function()
+		assert.equal(921, ns.Recorder.resolved.pickpocket.spellID)
+		assert.equal("name", ns.Recorder.resolved.pickpocket.how)
+		assert.equal(1833, ns.Recorder.resolved.cheapShot.spellID)
+	end)
+
+	it("records a looted pickpocket with latency, slots and money", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.advance(0.2)
+		openLoot({ mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432, "Hickory Shortbow") }, { 1, 2 })
+		local a = db.attempts[1]
+		assert.equal(MOB, a.guid)
+		assert.equal("succeeded", a.result)
+		assert.equal(100, a.resultMs)
+		assert.same({ home = 40, world = 60 }, a.lat)
+		assert.equal(87, a.pocket.slots[1].money)
+		assert.equal(5432, a.pocket.slots[2].itemID)
+		assert.equal(300, a.pocket.dtMs)
+		assert.same({}, a.pocket.left)
+		assert.equal("looted", ns.Logic.classifyAttempt(a, mock.clock))
+	end)
+
+	it("records the opener and its gap after the cast succeeded", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.advance(0.35)
+		mock.fire("UNIT_SPELLCAST_SENT", "player", "Stromgarde Soldier", "Cast-2", 1833)
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-2", 1833)
+		local a = db.attempts[1]
+		assert.equal("Cheap Shot", a.opener.name)
+		assert.is_true(a.opener.isOpener)
+		assert.equal(350, a.opener.dtMs)
+		assert.equal(450, a.opener.dtFromSentMs)
+		assert.equal("succeeded", a.opener.result)
+		assert.is_true(a.opener.sameTarget)
+		assert.equal(1, #db.attempts) -- the opener is not an attempt
+		assert.equal("never_shown", ns.Logic.classifyAttempt(a, mock.clock + 5))
+	end)
+
+	it("classifies a window closed with loot left, then finds that loot on the corpse", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		openLoot({ mock.moneySlot(MOB, 87), mock.itemSlot(MOB, 5432) }, { 1 })
+		local a = db.attempts[1]
+		assert.same({ 2 }, a.pocket.left)
+		assert.equal("left", ns.Logic.classifyAttempt(a, mock.clock))
+		-- the fight, then the corpse
+		mock.advance(20)
+		mock.target.dead = true
+		openLoot({ mock.moneySlot(MOB, 310), mock.itemSlot(MOB, 5432) }, { 1, 2 })
+		assert.equal(1, #a.corpse)
+		assert.is_true(a.corpse[1].targetDead)
+		assert.equal("normal_plus_pocket", ns.Logic.classifyCorpse(a))
+	end)
+
+	it("counts a second corpse window of the same mob as second_loot", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.advance(20)
+		mock.target.dead = true
+		openLoot({ mock.moneySlot(MOB, 310) }, { 1 })
+		mock.advance(1)
+		openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
+		local a = db.attempts[1]
+		assert.equal("never_shown", ns.Logic.classifyAttempt(a, mock.clock))
+		assert.equal(2, #a.corpse)
+		assert.equal("second_loot", ns.Logic.classifyCorpse(a))
+	end)
+
+	it("pins the no-pockets error on the attempt", function()
+		pickpocket("Cast-1")
+		mock.fire("UI_ERROR_MESSAGE", 51, "No pockets to pick")
+		mock.fire("UNIT_SPELLCAST_FAILED", "player", "Cast-1", 921)
+		local a = db.attempts[1]
+		assert.equal("no_pockets", a.errors[1].kind)
+		assert.equal("failed", a.result)
+		assert.equal("no_pockets", ns.Logic.classifyAttempt(a, mock.clock))
+	end)
+
+	it("records a client-side failure without SENT, with the error that came first", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.advance(0.5)
+		mock.fire("UI_ERROR_MESSAGE", 50, "Out of range")
+		mock.fire("UNIT_SPELLCAST_FAILED", "player", "Cast-9", 921)
+		assert.equal(2, #db.attempts)
+		assert.same({}, db.attempts[1].errors)
+		local b = db.attempts[2]
+		assert.is_true(b.clientSide)
+		assert.equal("out_of_range", b.errors[1].kind)
+		assert.equal("failed", ns.Logic.classifyAttempt(b, mock.clock))
+	end)
+
+	it("adds money that reached the bags to the open window", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.loot = { mock.moneySlot(MOB, 87) }
+		mock.fire("LOOT_READY", true)
+		mock.money = 87
+		mock.fire("PLAYER_MONEY")
+		mock.fire("CHAT_MSG_MONEY", "You loot 87 Copper")
+		mock.fire("LOOT_SLOT_CLEARED", 1)
+		mock.fire("LOOT_CLOSED")
+		local p = db.attempts[1].pocket
+		assert.equal(87, p.money)
+		assert.equal("You loot 87 Copper", p.chat[1].text)
+		assert.is_true(p.autoloot)
+	end)
+
+	it("stores 'secret' instead of a secret value and skips secret casts", function()
+		mock.secret["Cast-S"] = true
+		mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-S", 921)
+		assert.equal(0, #db.attempts)
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		local secretText = "You loot 1 Copper"
+		mock.secret[secretText] = true
+		mock.loot = { mock.moneySlot(MOB, 1) }
+		mock.fire("LOOT_READY", false)
+		mock.fire("CHAT_MSG_MONEY", secretText)
+		mock.fire("LOOT_CLOSED")
+		assert.equal("secret", db.attempts[1].pocket.chat[1].text)
+		assert.is_true(ns.Recorder.stats.secret >= 2)
+		assert.is_nil(ns.selftest.lastError)
+	end)
+
+	it("ignores Pick Pocket inside an instance", function()
+		mock.inInstance = true
+		pickpocket("Cast-1")
+		assert.equal(0, #db.attempts)
+		assert.equal(1, ns.Recorder.stats.skippedInstance)
+	end)
+
+	it("re-indexes saved attempts so a corpse after a reload still finds its pickpocket", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		local saved = db
+		mock.frames = {} -- the reload: the old event frame is gone
+		ns = mock.loadAddon(".", saved)
+		mock.advance(30)
+		mock.target.dead = true
+		openLoot({ mock.moneySlot(MOB, 310) }, { 1 })
+		assert.equal(1, #ns.db.attempts[1].corpse)
+	end)
+
+	it("prints a summary and writes a selftest snapshot on logout", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		openLoot({ mock.moneySlot(MOB, 12345) }, { 1 })
+		SlashCmdList.POCKETLOG("")
+		assert.matches("1 attempts", mock.chat[1])
+		assert.matches("looted 1", mock.chat[2])
+		assert.matches("1g 23s 45c", mock.chat[4])
+		mock.fire("PLAYER_LOGOUT")
+		assert.equal("test", db.selftest.version)
+		assert.equal("logout", db.selftest.phase)
+		assert.equal(1, db.selftest.summary.outcome.looted)
+	end)
+end)

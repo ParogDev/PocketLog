@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: PocketLog
+## Notes: Logs every Pick Pocket and the later corpse loot of the same mob (timing, latency, what was left behind) for offline analysis. Measures only.
+## Author: ParogDev
+## Version: @project-version@
+## SavedVariables: PocketLogDB
+## X-Game: forever
+## X-Website: https://github.com/ParogDev/PocketLog
+## X-License: MIT
+## IconTexture: Interface\Icons\INV_Misc_Bag_11
+
+Logic.lua
+Recorder.lua
+Core.lua

@@ -1,0 +1,232 @@
+-- Pure analysis of recorded attempts: no client calls, so busted tests cover all of it.
+-- An attempt is one Pick Pocket cast on one mob (see Recorder.lua for its shape). Two questions per attempt:
+--   outcome:        what the Pick Pocket did (looted / left / empty / never_shown / no_pockets / failed)
+--   corpseOutcome:  what the corpse gave later (not_looted / normal / normal_plus_pocket / second_loot)
+local _ADDON, ns = ...
+
+local Logic = {}
+ns.Logic = Logic
+
+-- Outcomes, in the order the summary prints them.
+Logic.OUTCOMES = { "looted", "left", "empty", "never_shown", "no_pockets", "failed", "pending" }
+Logic.CORPSE_OUTCOMES = { "normal", "normal_plus_pocket", "second_loot", "not_looted" }
+
+-- Error kinds Recorder.errorKind() gives a UI_ERROR_MESSAGE or a failed cast.
+local NO_POCKET_KINDS = { no_pockets = true, already_picked = true }
+
+local function slotsLeft(session)
+	local left = {}
+	if not session or not session.slots then
+		return left
+	end
+	local cleared = session.cleared or {}
+	for _, s in ipairs(session.slots) do
+		if not cleared[s.slot] then
+			left[#left + 1] = s
+		end
+	end
+	return left
+end
+Logic.slotsLeft = slotsLeft
+
+-- Money (copper) in a list of slots: the source amounts of money slots, else 0.
+local function moneyOf(slots)
+	local total = 0
+	for _, s in ipairs(slots or {}) do
+		if s.money and type(s.money) == "number" then
+			total = total + s.money
+		end
+	end
+	return total
+end
+Logic.moneyOf = moneyOf
+
+local function itemsOf(slots)
+	local out = {}
+	for _, s in ipairs(slots or {}) do
+		if s.itemID and type(s.itemID) == "number" then
+			out[#out + 1] = s.itemID
+		end
+	end
+	return out
+end
+Logic.itemsOf = itemsOf
+
+-- What a Pick Pocket attempt did. `now` (seconds, GetTimePreciseSec clock) decides "pending": a cast that
+-- succeeded less than `wait` seconds ago may still get its window.
+function Logic.classifyAttempt(a, now, wait)
+	wait = wait or 3
+	for _, e in ipairs(a.errors or {}) do
+		if NO_POCKET_KINDS[e.kind] then
+			return "no_pockets"
+		end
+	end
+	local p = a.pocket
+	if p then
+		if not p.slots or #p.slots == 0 then
+			return "empty"
+		end
+		if not p.closedAt then
+			return "pending" -- window still open
+		end
+		if #slotsLeft(p) > 0 then
+			return "left"
+		end
+		return "looted"
+	end
+	if a.result == "succeeded" then
+		if now and a.resultAt and now - a.resultAt < wait then
+			return "pending"
+		end
+		return "never_shown"
+	end
+	if a.result == "failed" or a.result == "interrupted" then
+		return "failed"
+	end
+	if now and a.sentAt and now - a.sentAt < wait then
+		return "pending"
+	end
+	-- Sent, then nothing: no success, no failure. The server dropped it or the event was secret.
+	return "never_shown"
+end
+
+-- Does a corpse session hold what the pocket left behind? Items by id; money when a corpse money source
+-- equals the pocket's money, or the corpse total equals pocket money plus some corpse money (merged).
+-- Returns { items = n, itemIDs = {...}, money = "equal" | "none", pocketMoney = c, pocketItems = n }.
+function Logic.matchCarryOver(pocketLeft, corpse)
+	local res = { items = 0, itemIDs = {}, money = "none", pocketMoney = moneyOf(pocketLeft) }
+	local want = itemsOf(pocketLeft)
+	res.pocketItems = #want
+	if not corpse or not corpse.slots then
+		return res
+	end
+	local have = {}
+	for _, id in ipairs(itemsOf(corpse.slots)) do
+		have[id] = (have[id] or 0) + 1
+	end
+	for _, id in ipairs(want) do
+		if have[id] and have[id] > 0 then
+			have[id] = have[id] - 1
+			res.items = res.items + 1
+			res.itemIDs[#res.itemIDs + 1] = id
+		end
+	end
+	if res.pocketMoney > 0 then
+		for _, s in ipairs(corpse.slots) do
+			if s.money == res.pocketMoney then
+				res.money = "equal"
+			end
+		end
+	end
+	return res
+end
+
+local function sessionHasLoot(s)
+	return s and s.slots and #s.slots > 0
+end
+
+-- What the corpse gave. Second loot: two corpse windows with loot. Plus pocket: the one corpse window holds
+-- the pocket's left-behind items or its exact money.
+function Logic.classifyCorpse(a)
+	local sessions = a.corpse or {}
+	local withLoot = 0
+	for _, s in ipairs(sessions) do
+		if sessionHasLoot(s) then
+			withLoot = withLoot + 1
+		end
+	end
+	if #sessions == 0 then
+		return "not_looted"
+	end
+	if withLoot >= 2 then
+		return "second_loot"
+	end
+	local left = slotsLeft(a.pocket)
+	if #left > 0 then
+		for _, s in ipairs(sessions) do
+			local m = Logic.matchCarryOver(left, s)
+			if m.items > 0 or m.money == "equal" then
+				return "normal_plus_pocket"
+			end
+		end
+	end
+	return "normal"
+end
+
+-- Bucket of a number for the summary tables (ms gaps, latency).
+function Logic.bucket(v, edges)
+	if type(v) ~= "number" then
+		return "n/a"
+	end
+	local lo = 0
+	for _, e in ipairs(edges) do
+		if v < e then
+			return lo .. "-" .. e
+		end
+		lo = e
+	end
+	return lo .. "+"
+end
+
+Logic.GAP_EDGES = { 250, 500, 1000, 2000 }
+Logic.LAT_EDGES = { 50, 100, 200, 400 }
+
+-- Counts for /pocketlog and the selftest. `now` as in classifyAttempt.
+function Logic.summarize(attempts, now)
+	local s = {
+		total = 0,
+		outcome = {},
+		corpse = {},
+		pocketMoney = 0,
+		pocketItems = 0,
+		carry = { left = 0, carried = 0, neverShown = 0, neverShownSecond = 0 },
+		openerBeforeWindow = 0,
+	}
+	for _, k in ipairs(Logic.OUTCOMES) do
+		s.outcome[k] = 0
+	end
+	for _, k in ipairs(Logic.CORPSE_OUTCOMES) do
+		s.corpse[k] = 0
+	end
+	for _, a in ipairs(attempts or {}) do
+		s.total = s.total + 1
+		local o = Logic.classifyAttempt(a, now)
+		local c = Logic.classifyCorpse(a)
+		s.outcome[o] = (s.outcome[o] or 0) + 1
+		s.corpse[c] = (s.corpse[c] or 0) + 1
+		if a.pocket and a.pocket.slots then
+			local got = {}
+			local left = {}
+			for _, x in ipairs(slotsLeft(a.pocket)) do
+				left[x.slot] = true
+			end
+			for _, x in ipairs(a.pocket.slots) do
+				if not left[x.slot] then
+					got[#got + 1] = x
+				end
+			end
+			s.pocketMoney = s.pocketMoney + moneyOf(got)
+			s.pocketItems = s.pocketItems + #itemsOf(got)
+		end
+		if o == "left" then
+			s.carry.left = s.carry.left + 1
+			if c == "normal_plus_pocket" or c == "second_loot" then
+				s.carry.carried = s.carry.carried + 1
+			end
+		elseif o == "never_shown" then
+			s.carry.neverShown = s.carry.neverShown + 1
+			if c == "second_loot" then
+				s.carry.neverShownSecond = s.carry.neverShownSecond + 1
+			end
+		end
+		if a.opener and a.opener.sentAt and a.sentAt then
+			local readyAt = a.pocket and a.pocket.readyAt
+			if not readyAt or a.opener.sentAt < readyAt then
+				s.openerBeforeWindow = s.openerBeforeWindow + 1
+			end
+		end
+	end
+	return s
+end
+
+return Logic
