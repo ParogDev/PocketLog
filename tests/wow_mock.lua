@@ -130,6 +130,16 @@ function M.install()
 	_G.GetMoney = function()
 		return M.money
 	end
+	M.speed = 0
+	_G.IsPlayerMoving = function()
+		return M.speed > 0
+	end
+	_G.GetUnitSpeed = function()
+		return M.speed, 7, 7, 4.72
+	end
+	_G.IsFalling = function()
+		return false
+	end
 	_G.SPELL_FAILED_TARGET_NO_POCKETS = "No pockets to pick"
 	_G.ERR_ALREADY_PICKPOCKETED = "Your target has already had its pockets picked"
 	_G.SPELL_FAILED_TARGET_AFFECTING_COMBAT = "Target is in combat"

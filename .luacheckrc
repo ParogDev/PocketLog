@@ -23,7 +23,7 @@ else
 		"CreateFrame", "C_AddOns", "C_Spell", "GetBuildInfo", "WOW_PROJECT_ID", "issecretvalue", "date", "time",
 		"GetTimePreciseSec", "GetNetStats", "IsInInstance", "UnitGUID", "UnitName", "UnitLevel", "UnitClassification",
 		"UnitIsDead", "GetRealZoneText", "GetNumLootItems", "GetLootSlotType", "GetLootSlotInfo", "GetLootSlotLink",
-		"GetLootSourceInfo", "GetMoney", "Enum",
+		"GetLootSourceInfo", "GetMoney", "Enum", "IsPlayerMoving", "GetUnitSpeed", "IsFalling",
 	}
 end
 -- FrameXML globals and GlobalStrings the generated list doesn't carry (it is built from the C API lists).

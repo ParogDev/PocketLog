@@ -74,8 +74,12 @@ function Logic.classifyAttempt(a, now, wait)
 		end
 		return "looted"
 	end
+	-- GetTimePreciseSec restarts with the PC: a saved time later than `now` is from before a reboot, so old.
+	local function recent(at)
+		return now and type(at) == "number" and now >= at and now - at < wait
+	end
 	if a.result == "succeeded" then
-		if now and a.resultAt and now - a.resultAt < wait then
+		if recent(a.resultAt) then
 			return "pending"
 		end
 		return "never_shown"
@@ -83,7 +87,7 @@ function Logic.classifyAttempt(a, now, wait)
 	if a.result == "failed" or a.result == "interrupted" then
 		return "failed"
 	end
-	if now and a.sentAt and now - a.sentAt < wait then
+	if recent(a.sentAt) then
 		return "pending"
 	end
 	-- Sent, then nothing: no success, no failure. The server dropped it or the event was secret.
@@ -168,6 +172,25 @@ function Logic.bucket(v, edges)
 	return lo .. "+"
 end
 
+-- Did the window show? Only outcomes that answer it: no_pockets, failed and pending say nothing.
+local SHOWN = { looted = true, left = true, empty = true, never_shown = false }
+
+-- "moving" | "still" | "unknown" at the Pick Pocket cast: the SENT snapshot, else the SUCCEEDED one.
+function Logic.movement(a)
+	for _, key in ipairs({ "move", "moveAtResult" }) do
+		local m = a[key]
+		if type(m) == "table" then
+			if m.moving == true or (type(m.speed) == "number" and m.speed > 0) then
+				return "moving"
+			end
+			if m.moving == false then
+				return "still"
+			end
+		end
+	end
+	return "unknown"
+end
+
 Logic.GAP_EDGES = { 250, 500, 1000, 2000 }
 Logic.LAT_EDGES = { 50, 100, 200, 400 }
 
@@ -181,6 +204,12 @@ function Logic.summarize(attempts, now)
 		pocketItems = 0,
 		carry = { left = 0, carried = 0, neverShown = 0, neverShownSecond = 0 },
 		openerBeforeWindow = 0,
+		-- window shown or not, split by movement at the Pick Pocket cast
+		move = {
+			still = { shown = 0, notShown = 0 },
+			moving = { shown = 0, notShown = 0 },
+			unknown = { shown = 0, notShown = 0 },
+		},
 	}
 	for _, k in ipairs(Logic.OUTCOMES) do
 		s.outcome[k] = 0
@@ -217,6 +246,15 @@ function Logic.summarize(attempts, now)
 			s.carry.neverShown = s.carry.neverShown + 1
 			if c == "second_loot" then
 				s.carry.neverShownSecond = s.carry.neverShownSecond + 1
+			end
+		end
+		local shown = SHOWN[o]
+		if shown ~= nil then
+			local m = s.move[Logic.movement(a)]
+			if shown then
+				m.shown = m.shown + 1
+			else
+				m.notShown = m.notShown + 1
 			end
 		end
 		if a.opener and a.opener.sentAt and a.sentAt then

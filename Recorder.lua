@@ -22,8 +22,18 @@ local POCKET_WINDOW = 5 -- seconds after the cast in which a loot window from th
 local OPENER_WINDOW = 10 -- seconds after the cast in which the next spell counts as the opener
 local ERROR_WINDOW = 1.5 -- seconds after a cast in which a UI error belongs to it
 local CHAT_WINDOW = 2 -- seconds after a loot window closed in which money and loot chat still belong to it
+local STALE_SESSION = 60 -- a loot window open this long without LOOT_CLOSED missed its close event
 
-R.stats = { events = 0, secret = 0, attempts = 0, sessions = 0, orphanLoot = 0, skippedInstance = 0 }
+R.stats = {
+	events = 0,
+	secret = 0,
+	attempts = 0,
+	sessions = 0,
+	orphanLoot = 0,
+	skippedInstance = 0,
+	repeatReady = 0,
+	closeMissed = 0,
+}
 
 local function isSecret(v)
 	return issecretvalue ~= nil and issecretvalue(v)
@@ -57,6 +67,27 @@ local function latency()
 	end
 	return { home = safe(home), world = safe(world) }
 end
+
+-- The player's movement right now: { moving, speed (yards/s), falling }. Speed can be secret when unit stats
+-- are restricted; then it is stored as "secret".
+local function movement()
+	-- explicit ifs: `ok and false or nil` would drop a false (standing still)
+	local m = {}
+	local okM, moving = pcall(IsPlayerMoving)
+	if okM then
+		m.moving = safe(moving)
+	end
+	local okS, speed = pcall(GetUnitSpeed, "player")
+	if okS then
+		m.speed = safe(speed)
+	end
+	local okF, falling = pcall(IsFalling)
+	if okF then
+		m.falling = safe(falling)
+	end
+	return m
+end
+R.movement = movement
 
 -- ---------------------------------------------------------------------------------------------------------
 -- Spells: resolved by name through C_Spell (enUS client), else by known ids checked against their name.
@@ -199,6 +230,7 @@ local function newAttempt(castGUID, spellID)
 		spellID = safe(spellID),
 		sentAt = now(),
 		lat = latency(),
+		move = movement(),
 		result = "sent",
 		errors = {},
 		corpse = {},
@@ -244,26 +276,38 @@ function R.onSpellSent(unit, _target, castGUID, spellID)
 		newAttempt(castGUID, spellID)
 		return
 	end
-	-- Any other spell right after a Pick Pocket: the opener (or whatever came next).
+	-- Another spell right after a Pick Pocket: the opener (Cheap Shot, Ambush, Garrote, Sap) goes in `opener`;
+	-- the first other spell before it (Sprint, a bandage) goes in `nextCast`, so it doesn't hide the opener.
 	local a = R.last
-	if a and not a.opener and a.sentAt and now() - a.sentAt < OPENER_WINDOW then
-		local name = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(spellID)
-		local t = now()
-		a.opener = {
-			spellID = spellID,
-			name = safe(name),
-			key = key,
-			isOpener = key ~= nil and R.SPELLS[key].opener == true,
-			sentAt = t,
-			dtMs = ms(a.resultAt or a.sentAt, t),
-			dtFromSentMs = ms(a.sentAt, t),
-			lat = latency(),
-			result = "sent",
-			sameTarget = targetGUID() == a.guid,
-		}
-		if type(castGUID) == "string" then
-			R.byCast[castGUID] = { opener = a.opener }
-		end
+	local t = now()
+	if not a or a.opener or not a.sentAt or t < a.sentAt or t - a.sentAt >= OPENER_WINDOW then
+		return
+	end
+	local isOpener = key ~= nil and R.SPELLS[key].opener == true
+	if not isOpener and a.nextCast then
+		return
+	end
+	local name = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(spellID)
+	local rec = {
+		spellID = spellID,
+		name = safe(name),
+		key = key,
+		isOpener = isOpener,
+		sentAt = t,
+		dtMs = ms(a.resultAt or a.sentAt, t),
+		dtFromSentMs = ms(a.sentAt, t),
+		lat = latency(),
+		move = movement(),
+		result = "sent",
+		sameTarget = targetGUID() == a.guid,
+	}
+	if isOpener then
+		a.opener = rec
+	else
+		a.nextCast = rec
+	end
+	if type(castGUID) == "string" then
+		R.byCast[castGUID] = { cast = rec }
 	end
 end
 
@@ -276,9 +320,11 @@ local function castResult(unit, castGUID, spellID, result)
 		return
 	end
 	local a = R.byCast[castGUID]
-	if a and a.opener and not a.id then
-		a.opener.result = result
-		a.opener.resultAt = now()
+	if a and a.cast then
+		if a.cast.result == "sent" then
+			a.cast.result = result
+			a.cast.resultAt = now()
+		end
 		return
 	end
 	if not a then
@@ -308,6 +354,7 @@ local function castResult(unit, castGUID, spellID, result)
 		a.result = result
 		a.resultAt = now()
 		a.resultMs = ms(a.sentAt, a.resultAt)
+		a.moveAtResult = movement()
 	end
 end
 
@@ -414,18 +461,29 @@ local function targetIsDead(guid)
 end
 
 function R.onLootReady(autoloot)
-	if R.session and not R.session.rec.closedAt then
-		return -- LOOT_READY again for the same window
-	end
 	local t = now()
+	if R.session and not R.session.rec.closedAt then
+		-- LOOT_READY again for the same window, unless that window is stale: a LOOT_CLOSED was missed.
+		if t >= R.session.rec.readyAt and t - R.session.rec.readyAt < STALE_SESSION then
+			R.stats.repeatReady = (R.stats.repeatReady or 0) + 1
+			return
+		end
+		R.session.rec.closeMissed = true
+		R.stats.closeMissed = (R.stats.closeMissed or 0) + 1
+		R.onLootClosed()
+	end
 	local n = GetNumLootItems() or 0
 	local slots = {}
 	for i = 1, n do
 		slots[#slots + 1] = readSlot(i)
 	end
 	local a, guid = attemptFor(slots)
-	if not a and R.last and #slots == 0 then
-		a, guid = R.last, R.last.guid -- an empty window right after a cast
+	local last = R.last
+	if not a and last and #slots == 0 and type(last.sentAt) == "number" and t >= last.sentAt then
+		-- an empty window right after a cast on the current target
+		if t - last.sentAt < POCKET_WINDOW and (last.guid == nil or targetGUID() == last.guid) then
+			a, guid = last, last.guid
+		end
 	end
 	local rec = {
 		readyAt = t,
@@ -439,7 +497,8 @@ function R.onLootReady(autoloot)
 	local kind = "other"
 	if a then
 		rec.dtMs = ms(a.sentAt, t)
-		local fresh = a.sentAt and t - a.sentAt < POCKET_WINDOW
+		-- t < sentAt: the attempt was saved before a reboot (the precise clock restarted), so it is old
+		local fresh = type(a.sentAt) == "number" and t >= a.sentAt and t - a.sentAt < POCKET_WINDOW
 		if not a.pocket and #a.corpse == 0 and fresh and a.result ~= "failed" and rec.targetDead ~= true then
 			a.pocket = rec
 			kind = "pocket"

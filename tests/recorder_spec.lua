@@ -174,6 +174,75 @@ describe("Recorder", function()
 		assert.equal(1, #ns.db.attempts[1].corpse)
 	end)
 
+	it("records movement at the Pick Pocket send, its success and the opener", function()
+		mock.speed = 7
+		pickpocket("Cast-1")
+		mock.speed = 0
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-2", 6770)
+		local a = db.attempts[1]
+		assert.same({ moving = true, speed = 7, falling = false }, a.move)
+		assert.same({ moving = false, speed = 0, falling = false }, a.moveAtResult)
+		assert.equal(0, a.opener.move.speed)
+		assert.equal("moving", ns.Logic.movement(a))
+		local s = ns.Logic.summarize(db.attempts, mock.clock + 5)
+		assert.same({ shown = 0, notShown = 1 }, s.move.moving)
+	end)
+
+	it("stores a secret speed as 'secret'", function()
+		mock.speed = 3
+		mock.secret[3] = true
+		pickpocket("Cast-1")
+		assert.equal("secret", db.attempts[1].move.speed)
+		assert.equal("moving", ns.Logic.movement(db.attempts[1])) -- IsPlayerMoving still answered
+	end)
+
+	it("keeps looking for the real opener past an unrelated spell", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-2", 1752)
+		mock.advance(0.4)
+		mock.fire("UNIT_SPELLCAST_SENT", "player", "x", "Cast-3", 1833)
+		local a = db.attempts[1]
+		assert.equal("Sinister Strike", a.nextCast.name)
+		assert.equal("Cheap Shot", a.opener.name)
+	end)
+
+	it("does not take an empty window long after the cast as the pocket", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.advance(600)
+		openLoot({}, {})
+		local a = db.attempts[1]
+		assert.is_nil(a.pocket)
+		assert.equal(0, #a.corpse)
+		assert.equal(1, ns.Recorder.stats.orphanLoot)
+	end)
+
+	it("treats attempts saved before a reboot (clock restarted) as old", function()
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		mock.frames = {}
+		mock.clock = 5 -- GetTimePreciseSec after a reboot
+		ns = mock.loadAddon(".", db)
+		local a = ns.db.attempts[1]
+		assert.equal("never_shown", ns.Logic.classifyAttempt(a, mock.clock))
+		openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
+		assert.is_nil(a.pocket)
+		assert.equal(1, #a.corpse)
+	end)
+
+	it("closes a window whose LOOT_CLOSED was missed when the next one opens", function()
+		mock.loot = { mock.moneySlot("Creature-0-1-0-1-99-0", 5) }
+		mock.fire("LOOT_READY", false)
+		mock.advance(120)
+		pickpocket("Cast-1")
+		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)
+		openLoot({ mock.moneySlot(MOB, 87) }, { 1 })
+		assert.is_not_nil(db.attempts[1].pocket)
+		assert.equal(1, ns.Recorder.stats.closeMissed)
+	end)
+
 	it("prints a summary and writes a selftest snapshot on logout", function()
 		pickpocket("Cast-1")
 		mock.fire("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-1", 921)

@@ -93,6 +93,13 @@ function ns.summaryLines()
 		s.carry.neverShownSecond
 	)
 	add("  opener cast before the pocket window: %d", s.openerBeforeWindow)
+	add(
+		"  window shown / not shown: still %d/%d, moving %d/%d",
+		s.move.still.shown,
+		s.move.still.notShown,
+		s.move.moving.shown,
+		s.move.moving.notShown
+	)
 	return out
 end
 
