@@ -130,7 +130,7 @@ describe("Logic", function()
 				corpse = { { slots = { money(1, 9) } }, { slots = { money(1, 4) } } },
 			},
 		}
-		local s = L.summarize(attempts, 100)
+		local s = L.summarize(attempts, 1000) -- past the corpse wait: no corpse is pending
 		assert.equal(3, s.total)
 		assert.equal(1, s.outcome.looted)
 		assert.equal(1, s.outcome.left)
@@ -175,5 +175,44 @@ describe("Logic", function()
 		assert.same({ shown = 1, notShown = 0 }, s.range.inRange)
 		assert.same({ shown = 1, notShown = 1 }, s.range.outOfRange)
 		assert.same({ shown = 0, notShown = 1 }, s.range.unknown)
+	end)
+
+	describe("pending corpse", function()
+		it("is pending within the corpse wait, not_looted after it, before a reboot or without a clock", function()
+			local a = { result = "succeeded", sentAt = 100, corpse = {} }
+			assert.equal("pending", L.classifyCorpse(a, 150))
+			assert.equal("not_looted", L.classifyCorpse(a, 100 + L.CORPSE_WAIT))
+			assert.equal("not_looted", L.classifyCorpse(a, 5)) -- clock restarted
+			assert.equal("not_looted", L.classifyCorpse(a, nil))
+			assert.equal("pending", L.classifyCorpse(a, 105, 10))
+		end)
+
+		it("keeps attempts with a pending corpse out of the carry-over counts", function()
+			local leftPocket = { closedAt = 101, slots = { item(1, 5432) }, cleared = {} }
+			local attempts = {
+				{ result = "succeeded", sentAt = 100, pocket = leftPocket, corpse = {} },
+				{ result = "succeeded", sentAt = 100, resultAt = 100.1, corpse = {} },
+			}
+			local s = L.summarize(attempts, 150)
+			assert.equal(2, s.corpse.pending)
+			assert.equal(0, s.corpse.not_looted)
+			assert.same({ left = 0, carried = 0, neverShown = 0, neverShownSecond = 0 }, s.carry)
+			s = L.summarize(attempts, 1000)
+			assert.same({ left = 1, carried = 0, neverShown = 1, neverShownSecond = 0 }, s.carry)
+		end)
+	end)
+
+	-- The same cases tools/pocketlog_report.py is tested against in the scaffolding (companion/tests).
+	it("classifies every shared parity case as the fixture says", function()
+		local chunk = assert(loadfile("tests/fixtures/classify_cases.lua"))
+		local env = {}
+		setfenv(chunk, env)
+		chunk()
+		local cases = env.PocketLogClassifyCases
+		assert.is_true(#cases >= 20)
+		for _, c in ipairs(cases) do
+			assert.equal(c.outcome, L.classifyAttempt(c.attempt, c.now), c.name)
+			assert.equal(c.corpse, L.classifyCorpse(c.attempt, c.now), c.name)
+		end
 	end)
 end)

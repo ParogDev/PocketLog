@@ -1,7 +1,9 @@
 -- Pure analysis of recorded attempts: no client calls, so busted tests cover all of it.
 -- An attempt is one Pick Pocket cast on one mob (see Recorder.lua for its shape). Two questions per attempt:
 --   outcome:        what the Pick Pocket did (looted / left / empty / never_shown / no_pockets / failed)
---   corpseOutcome:  what the corpse gave later (not_looted / normal / normal_plus_pocket / second_loot)
+--   corpseOutcome:  what the corpse gave later (not_looted / normal / normal_plus_pocket / second_loot / pending)
+-- tools/pocketlog_report.py in the scaffolding mirrors both classifiers; tests/fixtures/classify_cases.lua pins
+-- them to the same answers (busted here, pytest there).
 local _ADDON, ns = ...
 
 local Logic = {}
@@ -9,7 +11,16 @@ ns.Logic = Logic
 
 -- Outcomes, in the order the summary prints them.
 Logic.OUTCOMES = { "looted", "left", "empty", "never_shown", "no_pockets", "failed", "pending" }
-Logic.CORPSE_OUTCOMES = { "normal", "normal_plus_pocket", "second_loot", "not_looted" }
+Logic.CORPSE_OUTCOMES = { "normal", "normal_plus_pocket", "second_loot", "not_looted", "pending" }
+
+-- Seconds after the Pick Pocket send in which an unlooted corpse is "pending" (the fight may still be on),
+-- not "not_looted".
+Logic.CORPSE_WAIT = 120
+
+-- GetTimePreciseSec restarts with the PC: a saved time later than `now` is from before a reboot, so old.
+local function within(now, at, wait)
+	return type(now) == "number" and type(at) == "number" and now >= at and now - at < wait
+end
 
 -- Error kinds Recorder.errorKind() gives a UI_ERROR_MESSAGE or a failed cast.
 local NO_POCKET_KINDS = { no_pockets = true, already_picked = true }
@@ -75,9 +86,8 @@ function Logic.classifyAttempt(a, now, wait)
 		end
 		return "looted"
 	end
-	-- GetTimePreciseSec restarts with the PC: a saved time later than `now` is from before a reboot, so old.
 	local function recent(at)
-		return now and type(at) == "number" and now >= at and now - at < wait
+		return within(now, at, wait)
 	end
 	if a.result == "succeeded" then
 		if recent(a.resultAt) then
@@ -131,8 +141,9 @@ local function sessionHasLoot(s)
 end
 
 -- What the corpse gave. Second loot: two corpse windows with loot. Plus pocket: the one corpse window holds
--- the pocket's left-behind items or its exact money.
-function Logic.classifyCorpse(a)
+-- the pocket's left-behind items or its exact money. Pending: no corpse window yet, and the Pick Pocket was
+-- sent less than `wait` (CORPSE_WAIT) seconds before `now`, so the mob may still be fought.
+function Logic.classifyCorpse(a, now, wait)
 	local sessions = a.corpse or {}
 	local withLoot = 0
 	for _, s in ipairs(sessions) do
@@ -141,6 +152,9 @@ function Logic.classifyCorpse(a)
 		end
 	end
 	if #sessions == 0 then
+		if within(now, a.sentAt, wait or Logic.CORPSE_WAIT) then
+			return "pending"
+		end
 		return "not_looted"
 	end
 	if withLoot >= 2 then
@@ -246,7 +260,7 @@ function Logic.summarize(attempts, now)
 	for _, a in ipairs(attempts or {}) do
 		s.total = s.total + 1
 		local o = Logic.classifyAttempt(a, now)
-		local c = Logic.classifyCorpse(a)
+		local c = Logic.classifyCorpse(a, now)
 		s.outcome[o] = (s.outcome[o] or 0) + 1
 		s.corpse[c] = (s.corpse[c] or 0) + 1
 		if a.pocket and a.pocket.slots then
@@ -263,12 +277,14 @@ function Logic.summarize(attempts, now)
 			s.pocketMoney = s.pocketMoney + moneyOf(got)
 			s.pocketItems = s.pocketItems + #itemsOf(got)
 		end
-		if o == "left" then
+		-- carry-over counts only attempts whose corpse is settled: a pending corpse may still show the pocket loot
+		local settled = c ~= "pending"
+		if settled and o == "left" then
 			s.carry.left = s.carry.left + 1
 			if c == "normal_plus_pocket" or c == "second_loot" then
 				s.carry.carried = s.carry.carried + 1
 			end
-		elseif o == "never_shown" then
+		elseif settled and o == "never_shown" then
 			s.carry.neverShown = s.carry.neverShown + 1
 			if c == "second_loot" then
 				s.carry.neverShownSecond = s.carry.neverShownSecond + 1

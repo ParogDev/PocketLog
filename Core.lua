@@ -22,17 +22,28 @@ end
 local selftest = { counters = R.stats }
 ns.selftest = selftest
 
+-- The version the code says it is: a junction-linked checkout has the packager's unreplaced token in the .toc,
+-- so the selftest would show the same "@project-version@" before and after a change.
+ns.VERSION = "0.3.1"
+
 local function version()
 	local ok, v = pcall(C_AddOns.GetAddOnMetadata, ADDON, "Version")
-	return ok and v or "unknown"
+	if not ok or type(v) ~= "string" or v:find("@", 1, true) then
+		return ns.VERSION
+	end
+	return v
 end
+ns.version = version
 
 function selftest.snapshot(phase)
 	local okB, buildVersion, buildNumber, _, interface = pcall(GetBuildInfo)
-	local sum = Logic.summarize(ns.db.attempts, GetTimePreciseSec())
+	local clock = GetTimePreciseSec()
+	local sum = Logic.summarize(ns.db.attempts, clock)
 	ns.db.selftest = {
 		phase = phase,
 		version = version(),
+		-- GetTimePreciseSec at the save: the report's `now` for pending (attempt times are on that clock)
+		clock = clock,
 		build = okB and (tostring(buildVersion) .. "." .. tostring(buildNumber)) or "GetBuildInfo failed",
 		interface = okB and interface or nil,
 		project = WOW_PROJECT_ID,
@@ -95,11 +106,13 @@ function ns.summaryLines()
 	)
 	add("  opener cast before the pocket window: %d", s.openerBeforeWindow)
 	add(
-		"  window shown / not shown: still %d/%d, moving %d/%d",
+		"  window shown / not shown: still %d/%d, moving %d/%d, unknown %d/%d",
 		s.move.still.shown,
 		s.move.still.notShown,
 		s.move.moving.shown,
-		s.move.moving.notShown
+		s.move.moving.notShown,
+		s.move.unknown.shown,
+		s.move.unknown.notShown
 	)
 	add(
 		"  pocket window closed by: opener %d, all taken %d, manual %d, empty %d",
