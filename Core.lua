@@ -161,7 +161,7 @@ end
 SLASH_POCKETLOG1 = "/pocketlog"
 SlashCmdList.POCKETLOG = function(msg)
 	msg = type(msg) == "string" and msg:lower() or ""
-	local barArg = msg:match("^bar%s*(.-)%s*$")
+	local barArg = msg == "bar" and "" or msg:match("^bar%s+(.-)%s*$")
 	if barArg then
 		for _, line in ipairs(Bar.slash(barArg)) do
 			print(line)

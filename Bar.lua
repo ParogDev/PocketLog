@@ -196,8 +196,11 @@ function B.view(s, t)
 		v.fill = frac(s.pressAt - s.castAt)
 		v.color = "red"
 		v.label = "Too early"
-		local readySec = s.gate
-		v.sub = string.format("Opened %d ms early. Loot lost.", math.max(0, ms(readySec - (s.pressAt - s.castAt))))
+		if s.gateSolid then
+			v.sub = string.format("Opened %d ms early. Loot lost.", math.max(0, ms(s.gate - (s.pressAt - s.castAt))))
+		else
+			v.sub = "Opened before the loot window opened."
+		end
 	elseif p == "left" then
 		v.fill = frac(s.doneAt - s.castAt)
 		v.color = "red"
@@ -481,8 +484,20 @@ function Bar.init(db)
 end
 
 -- ---- events (called by Core after the recorder has seen the same event) ------------------------------------
-local function startFor(a, t)
-	B.start(Bar.state, t, latency(), a.move and a.move.moving == true, a)
+-- Starts the bar for attempt `a`, seen at t. The origin is the cast's success, or the send when the loot window
+-- beat the SUCCEEDED (never later than t). An opener the recorder already filed on the attempt (sent before the
+-- bar started) is applied at its own time.
+local function startFor(a, t, fromSend)
+	local origin = t
+	if fromSend and type(a.sentAt) == "number" and a.sentAt <= t then
+		origin = a.sentAt
+	end
+	B.start(Bar.state, origin, latency(), a.move and a.move.moving == true, a)
+	local o = a.opener
+	local since = type(a.sentAt) == "number" and a.sentAt or origin
+	if o and o.isOpener and type(o.sentAt) == "number" and o.sentAt >= since and o.sentAt <= t then
+		B.onPress(Bar.state, o.sentAt)
+	end
 end
 
 local on = {}
@@ -501,12 +516,14 @@ function on.UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellID)
 	end
 end
 
--- Any spell other than Pick Pocket is the second press.
+-- The second press is an opener (Cheap Shot, Ambush, Garrote, Sap): Sprint, a trinket or a racial between the
+-- two presses does not close the loot window and is not judged.
 function on.UNIT_SPELLCAST_SENT(unit, _target, castGUID, spellID)
 	if unit ~= "player" or isSecret(castGUID) or isSecret(spellID) then
 		return
 	end
-	if ns.Recorder.spellKey(spellID) ~= "pickpocket" then
+	local key = ns.Recorder.spellKey(spellID)
+	if key and ns.Recorder.SPELLS[key].opener then
 		B.onPress(Bar.state, now())
 	end
 end
@@ -519,7 +536,7 @@ function on.LOOT_READY()
 	local t = now()
 	-- the window beat the cast's SUCCEEDED: start from the send
 	if Bar.state.key ~= s.attempt and not inInstance() then
-		startFor(s.attempt, t)
+		startFor(s.attempt, t, true)
 	end
 	if Bar.state.key == s.attempt then
 		B.onWindow(Bar.state, t, #(s.rec.slots or {}), lootRate())
@@ -561,8 +578,10 @@ function Bar.selftest()
 		c[k] = v
 	end
 	c.enabled = Bar.enabled()
-	c.locked = Bar.cfg and Bar.cfg.locked or nil
-	c.drain = Bar.cfg and Bar.cfg.drain or nil
+	if Bar.cfg then
+		c.locked = Bar.cfg.locked
+		c.drain = Bar.cfg.drain
+	end
 	c.phase = Bar.state.phase
 	return c
 end
