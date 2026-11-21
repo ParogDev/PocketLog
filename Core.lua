@@ -24,7 +24,7 @@ ns.selftest = selftest
 
 -- The version the code says it is: a junction-linked checkout has the packager's unreplaced token in the .toc,
 -- so the selftest would show the same "@project-version@" before and after a change.
-ns.VERSION = "0.3.2"
+ns.VERSION = "0.3.3"
 
 local function version()
 	local ok, v = pcall(C_AddOns.GetAddOnMetadata, ADDON, "Version")
@@ -44,6 +44,8 @@ function selftest.snapshot(phase)
 		version = version(),
 		-- GetTimePreciseSec at the save: the report's `now` for pending (attempt times are on that clock)
 		clock = clock,
+		-- the waits Logic classifies with, so the report needs no copy of them
+		waits = { attempt = Logic.ATTEMPT_WAIT, corpse = Logic.CORPSE_WAIT, window = Logic.WINDOW_WAIT },
 		build = okB and (tostring(buildVersion) .. "." .. tostring(buildNumber)) or "GetBuildInfo failed",
 		interface = okB and interface or nil,
 		project = WOW_PROJECT_ID,
@@ -115,11 +117,12 @@ function ns.summaryLines()
 		s.move.unknown.notShown
 	)
 	add(
-		"  pocket window closed by: opener %d, all taken %d, manual %d, empty %d",
+		"  pocket window closed by: opener %d, all taken %d, manual %d, empty %d, unknown %d",
 		s.closedBy.opener,
 		s.closedBy.all_taken,
 		s.closedBy.manual,
-		s.closedBy.empty
+		s.closedBy.empty,
+		s.closedBy.unknown
 	)
 	add(
 		"  shown / not shown by range: in %d/%d, out %d/%d, unknown %d/%d",
@@ -201,6 +204,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		guard("cvars", R.refreshCVars)
 		guard("snapshot", selftest.snapshot, "login")
 	elseif event == "PLAYER_LOGOUT" then
+		guard("settleOpen", R.onLogout)
 		guard("snapshot", selftest.snapshot, "logout")
 	elseif ns.db then
 		local fn = handlers[event]

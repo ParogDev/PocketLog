@@ -30,7 +30,8 @@ local POCKET_WINDOW = 5 -- seconds after the cast in which a loot window from th
 local OPENER_WINDOW = 10 -- seconds after the cast in which the next spell counts as the opener
 local ERROR_WINDOW = 1.5 -- seconds after a cast in which a UI error belongs to it
 local CHAT_WINDOW = 2 -- seconds after a loot window closed in which money and loot chat still belong to it
-local STALE_SESSION = 60 -- a loot window open this long without LOOT_CLOSED missed its close event
+-- a loot window open this long without LOOT_CLOSED missed its close event (Logic.lua loads first, see the .toc)
+local STALE_SESSION = ns.Logic.WINDOW_WAIT
 local CLOSE_BY_OPENER = 0.3 -- an opener sent this close to LOOT_CLOSED (either side) is taken as what closed it
 
 R.stats = {
@@ -42,6 +43,7 @@ R.stats = {
 	skippedInstance = 0,
 	repeatReady = 0,
 	closeMissed = 0,
+	closeUnknown = 0,
 }
 
 local function isSecret(v)
@@ -330,11 +332,51 @@ local function rememberClosed(s)
 	end
 end
 
+-- Settles every loot window in the log that never got LOOT_CLOSED: closedBy "unknown", `left` from the slots not
+-- cleared while it was open, no closedAt (the close time was never seen). Run at load, where nothing can still
+-- be open (a reload, disconnect or crash closed it), and at logout, which closes the open window. Without it a
+-- window open at a reload stays "pending" in the report forever. Returns how many it settled.
+function R.settleOpen(db)
+	local n = 0
+	local function settle(rec)
+		if type(rec) ~= "table" or rec.closedAt or rec.closedBy or type(rec.slots) ~= "table" then
+			return
+		end
+		local cleared = rec.cleared or {}
+		rec.left = {}
+		for _, slot in ipairs(rec.slots) do
+			-- runs in ADDON_LOADED: a malformed saved entry must not stop the load
+			if type(slot) == "table" and not cleared[slot.slot] then
+				rec.left[#rec.left + 1] = slot.slot
+			end
+		end
+		rec.closedBy = "unknown"
+		n = n + 1
+	end
+	for _, a in ipairs(db.attempts or {}) do
+		settle(a.pocket)
+		for _, c in ipairs(a.corpse or {}) do
+			settle(c)
+		end
+	end
+	R.stats.closeUnknown = R.stats.closeUnknown + n
+	return n
+end
+
+-- Logout: the open window closes with the client, unseen.
+function R.onLogout()
+	if R.db then
+		R.settleOpen(R.db)
+	end
+	R.session = nil
+end
+
 function R.attach(db)
 	R.db = db
 	db.attempts = db.attempts or {}
 	db.nextId = db.nextId or (#db.attempts + 1)
 	R.byCast, R.byGUID, R.last, R.session, R.closed, R.recentClosed = {}, {}, nil, nil, nil, {}
+	R.settleOpen(db)
 	-- Corpses can be looted after a reload: index the recent attempts by mob.
 	local from = math.max(1, #db.attempts - 300)
 	for i = from, #db.attempts do

@@ -13,9 +13,16 @@ ns.Logic = Logic
 Logic.OUTCOMES = { "looted", "left", "empty", "never_shown", "no_pockets", "failed", "pending" }
 Logic.CORPSE_OUTCOMES = { "normal", "normal_plus_pocket", "second_loot", "not_looted", "pending" }
 
+-- The waits below go into the selftest (`waits`), so tools/pocketlog_report.py classifies with the values the
+-- save was made with; tests/fixtures/classify_cases.lua (PocketLogWaits) pins its fallback to these.
+-- Seconds after the cast result (or the send) in which the pocket window may still come.
+Logic.ATTEMPT_WAIT = 3
 -- Seconds after the Pick Pocket send in which an unlooted corpse is "pending" (the fight may still be on),
 -- not "not_looted".
 Logic.CORPSE_WAIT = 120
+-- Seconds a loot window may stay open without LOOT_CLOSED. Past it the close was missed (a reload, disconnect
+-- or crash while the window was open) and the window counts as closed. Recorder uses it for a missed close too.
+Logic.WINDOW_WAIT = 60
 
 -- GetTimePreciseSec restarts with the PC: a saved time later than `now` is from before a reboot, so old.
 local function within(now, at, wait)
@@ -65,9 +72,11 @@ end
 Logic.itemsOf = itemsOf
 
 -- What a Pick Pocket attempt did. `now` (seconds, GetTimePreciseSec clock) decides "pending": a cast that
--- succeeded less than `wait` seconds ago may still get its window.
-function Logic.classifyAttempt(a, now, wait)
-	wait = wait or 3
+-- succeeded less than `wait` seconds ago may still get its window. A window without closedAt is "pending" only
+-- while it is under `windowWait` seconds old; a window Recorder settled (closedBy "unknown"), an older one or
+-- one with no clock to judge by counts as closed, with the slots it took then.
+function Logic.classifyAttempt(a, now, wait, windowWait)
+	wait = wait or Logic.ATTEMPT_WAIT
 	for _, e in ipairs(a.errors or {}) do
 		if NO_POCKET_KINDS[e.kind] then
 			return "no_pockets"
@@ -78,7 +87,7 @@ function Logic.classifyAttempt(a, now, wait)
 		if not p.slots or #p.slots == 0 then
 			return "empty"
 		end
-		if not p.closedAt then
+		if not p.closedAt and p.closedBy ~= "unknown" and within(now, p.readyAt, windowWait or Logic.WINDOW_WAIT) then
 			return "pending" -- window still open
 		end
 		if #slotsLeft(p) > 0 then
@@ -221,7 +230,8 @@ function Logic.range(a)
 	return "unknown"
 end
 
-Logic.CLOSED_BY = { "opener", "all_taken", "manual", "empty" }
+-- "unknown": the window was still open at a load or logout (Recorder.settleOpen), so its close was never seen.
+Logic.CLOSED_BY = { "opener", "all_taken", "manual", "empty", "unknown" }
 
 Logic.GAP_EDGES = { 250, 500, 1000, 2000 }
 Logic.LAT_EDGES = { 50, 100, 200, 400 }
@@ -243,7 +253,7 @@ function Logic.summarize(attempts, now)
 			unknown = { shown = 0, notShown = 0 },
 		},
 		-- what closed the pocket window (Recorder's guess), over pocket windows that recorded it
-		closedBy = { opener = 0, all_taken = 0, manual = 0, empty = 0 },
+		closedBy = { opener = 0, all_taken = 0, manual = 0, empty = 0, unknown = 0 },
 		-- window shown or not, split by C_Spell.IsSpellInRange at the Pick Pocket cast
 		range = {
 			inRange = { shown = 0, notShown = 0 },
